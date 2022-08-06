@@ -1,0 +1,6 @@
+project: rustdesk
+target: vpxdecode
+
+cmds:
+  - cmd: /vpxdecode @@
+    libfuzzer: false
