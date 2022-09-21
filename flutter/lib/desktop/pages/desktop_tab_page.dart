@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/consts.dart';
@@ -15,7 +17,7 @@ class DesktopTabPage extends StatefulWidget {
 }
 
 class _DesktopTabPageState extends State<DesktopTabPage> {
-  final tabController = DesktopTabController();
+  final tabController = DesktopTabController(tabType: DesktopTabType.main);
 
   @override
   void initState() {
@@ -33,30 +35,32 @@ class _DesktopTabPageState extends State<DesktopTabPage> {
 
   @override
   Widget build(BuildContext context) {
-    final dark = isDarkTheme();
     RxBool fullscreen = false.obs;
     Get.put(fullscreen, tag: 'fullscreen');
-    return Obx(() => DragToResizeArea(
-          resizeEdgeSize: fullscreen.value ? 1.0 : 8.0,
-          child: Container(
-            decoration: BoxDecoration(
-                border: Border.all(color: MyTheme.color(context).border!)),
-            child: Scaffold(
-                backgroundColor: MyTheme.color(context).bg,
-                body: DesktopTab(
-                  controller: tabController,
-                  theme: dark ? TarBarTheme.dark() : TarBarTheme.light(),
-                  isMainWindow: true,
-                  tail: ActionIcon(
-                    message: 'Settings',
-                    icon: IconFont.menu,
-                    theme: dark ? TarBarTheme.dark() : TarBarTheme.light(),
-                    onTap: onAddSetting,
-                    is_close: false,
-                  ),
-                )),
-          ),
-        ));
+    final tabWidget = Container(
+      child: Overlay(initialEntries: [
+        OverlayEntry(builder: (context) {
+          gFFI.dialogManager.setOverlayState(Overlay.of(context));
+          return Scaffold(
+              backgroundColor: MyTheme.color(context).bg,
+              body: DesktopTab(
+                controller: tabController,
+                tail: ActionIcon(
+                  message: 'Settings',
+                  icon: IconFont.menu,
+                  onTap: onAddSetting,
+                  isClose: false,
+                ),
+              ));
+        })
+      ]),
+    );
+    return Platform.isMacOS
+        ? tabWidget
+        : Obx(() => DragToResizeArea(
+            resizeEdgeSize:
+                fullscreen.value ? kFullScreenEdgeSize : kWindowEdgeSize,
+            child: tabWidget));
   }
 
   void onAddSetting() {

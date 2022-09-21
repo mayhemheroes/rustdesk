@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:window_manager/window_manager.dart';
 
-import '../../mobile/widgets/overlay.dart';
 import '../common.dart';
+import '../common/widgets/overlay.dart';
 import 'model.dart';
 
 class MessageBody {
@@ -128,7 +128,10 @@ class ChatModel with ChangeNotifier {
     if (overlayState == null) return;
     final overlay = OverlayEntry(builder: (context) {
       return DraggableChatWindow(
-          position: Offset(20, 80), width: 250, height: 350, chatModel: this);
+          position: const Offset(20, 80),
+          width: 250,
+          height: 350,
+          chatModel: this);
     });
     overlayState.insert(overlay);
     chatWindowOverlayEntry = overlay;
@@ -143,9 +146,12 @@ class ChatModel with ChangeNotifier {
   }
 
   toggleChatOverlay() {
-    if (chatIconOverlayEntry == null || chatWindowOverlayEntry == null) {
+    if ((!isDesktop && chatIconOverlayEntry == null) ||
+        chatWindowOverlayEntry == null) {
       gFFI.invokeMethod("enable_soft_keyboard", true);
-      showChatIconOverlay();
+      if (!isDesktop) {
+        showChatIconOverlay();
+      }
       showChatWindowOverlay();
     } else {
       hideChatIconOverlay();
@@ -209,9 +215,18 @@ class ChatModel with ChangeNotifier {
         id: await bind.mainGetLastRemoteId(),
       );
     } else {
-      final client = _ffi.target?.serverModel.clients[id];
+      final client = _ffi.target?.serverModel.clients
+          .firstWhere((client) => client.id == id);
       if (client == null) {
         return debugPrint("Failed to receive msg,user doesn't exist");
+      }
+      if (isDesktop) {
+        window_on_top(null);
+        var index = _ffi.target?.serverModel.clients
+            .indexWhere((client) => client.id == id);
+        if (index != null && index >= 0) {
+          gFFI.serverModel.tabController.jumpTo(index);
+        }
       }
       chatUser = ChatUser(id: client.peerId, firstName: client.name);
     }

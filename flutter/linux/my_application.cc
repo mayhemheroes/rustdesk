@@ -19,6 +19,8 @@ static void my_application_activate(GApplication* application) {
   MyApplication* self = MY_APPLICATION(application);
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
+  // we have custom window frame
+  gtk_window_set_decorated(window, FALSE);
 
   // Use a header bar when running in GNOME as this is the common style used
   // by applications and is the setup most users will be using (e.g. Ubuntu
@@ -49,7 +51,7 @@ static void my_application_activate(GApplication* application) {
 
   // auto bdw = bitsdojo_window_from(window); // <--- add this line
   // bdw->setCustomFrame(true);               // <-- add this line
-  gtk_window_set_default_size(window, 1280, 720);   // <-- comment this line
+  gtk_window_set_default_size(window, 800, 600);   // <-- comment this line
   gtk_widget_show(GTK_WIDGET(window));
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();

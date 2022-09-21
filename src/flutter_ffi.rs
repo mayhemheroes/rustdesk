@@ -5,41 +5,35 @@ use std::{
 };
 
 use flutter_rust_bridge::{StreamSink, SyncReturn, ZeroCopyBuffer};
-use serde_json::{json, Number, Value};
+use serde_json::json;
 
+use hbb_common::ResultType;
 use hbb_common::{
-    config::{self, Config, LocalConfig, PeerConfig, ONLINE},
+    config::{self, LocalConfig, PeerConfig, ONLINE},
     fs, log,
 };
-use hbb_common::{password_security, ResultType};
 
-use crate::client::file_trait::FileManager;
-use crate::common::make_fd_to_json;
-use crate::flutter::connection_manager::{self, get_clients_length, get_clients_state};
-use crate::flutter::{self, Session, SESSIONS};
+use crate::flutter::{self, SESSIONS};
 use crate::start_server;
 use crate::ui_interface;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-use crate::ui_interface::{change_id, check_connect_status, is_ok_change_id};
+use crate::ui_interface::get_sound_inputs;
 use crate::ui_interface::{
-    check_super_user_permission, discover, forget_password, get_api_server, get_app_name,
-    get_async_job_status, get_connect_status, get_fav, get_id, get_lan_peers, get_langs,
-    get_license, get_local_option, get_option, get_options, get_peer, get_peer_option, get_socks,
-    get_sound_inputs, get_uuid, get_version, has_hwcodec, has_rendezvous_service, post_request,
-    set_local_option, set_option, set_options, set_peer_option, set_permanent_password, set_socks,
-    store_fav, test_if_valid_server, update_temporary_password, using_public_server,
+    change_id, check_mouse_time, check_super_user_permission, discover, forget_password,
+    get_api_server, get_app_name, get_async_job_status, get_connect_status, get_fav, get_id,
+    get_lan_peers, get_langs, get_license, get_local_option, get_mouse_time, get_option,
+    get_options, get_peer, get_peer_option, get_socks, get_uuid, get_version, has_hwcodec,
+    has_rendezvous_service, post_request, send_to_cm, set_local_option, set_option, set_options,
+    set_peer_option, set_permanent_password, set_socks, store_fav, test_if_valid_server,
+    update_temporary_password, using_public_server,
+};
+use crate::{
+    client::file_trait::FileManager,
+    flutter::{make_fd_to_json, session_add, session_start_},
 };
 
 fn initialize(app_dir: &str) {
     *config::APP_DIR.write().unwrap() = app_dir.to_owned();
-    #[cfg(feature = "cli")]
-    {
-        #[cfg(any(target_os = "android", target_os = "ios"))]
-        {
-            crate::common::test_rendezvous_server();
-            crate::common::test_nat_type();
-        }
-    }
     #[cfg(target_os = "android")]
     {
         android_logger::init_once(
@@ -47,6 +41,8 @@ fn initialize(app_dir: &str) {
                 .with_min_level(log::Level::Debug) // limit log level
                 .with_tag("ffi"), // logs will show under mytag tag
         );
+        #[cfg(feature = "mediacodec")]
+        scrap::mediacodec::check_mediacodec();
     }
     #[cfg(target_os = "ios")]
     {
@@ -57,13 +53,6 @@ fn initialize(app_dir: &str) {
     {
         crate::common::check_software_update();
     }
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-    {
-        use hbb_common::env_logger::*;
-        if let Err(e) = try_init_from_env(Env::default().filter_or(DEFAULT_FILTER_ENV, "debug")) {
-            log::debug!("{}", e);
-        }
-    }
 }
 
 /// FFI for rustdesk core's main entry.
@@ -71,7 +60,7 @@ fn initialize(app_dir: &str) {
 #[no_mangle]
 pub extern "C" fn rustdesk_core_main() -> bool {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    return crate::core_main::core_main();
+    return crate::core_main::core_main().is_some();
     #[cfg(any(target_os = "android", target_os = "ios"))]
     false
 }
@@ -102,19 +91,27 @@ pub fn stop_global_event_stream(app_type: String) {
         .remove(&app_type);
 }
 
-pub fn host_stop_system_key_propagate(stopped: bool) {
+pub fn host_stop_system_key_propagate(_stopped: bool) {
     #[cfg(windows)]
-    crate::platform::windows::stop_system_key_propagate(stopped);
+    crate::platform::windows::stop_system_key_propagate(_stopped);
 }
 
-pub fn session_connect(
-    events2ui: StreamSink<EventToUI>,
+// FIXME: -> ResultType<()> cannot be parsed by frb_codegen
+// thread 'main' panicked at 'Failed to parse function output type `ResultType<()>`', $HOME\.cargo\git\checkouts\flutter_rust_bridge-ddba876d3ebb2a1e\e5adce5\frb_codegen\src\parser\mod.rs:151:25
+pub fn session_add_sync(
     id: String,
     is_file_transfer: bool,
     is_port_forward: bool,
-) -> ResultType<()> {
-    Session::start(&id, is_file_transfer, is_port_forward, events2ui);
-    Ok(())
+) -> SyncReturn<String> {
+    if let Err(e) = session_add(&id, is_file_transfer, is_port_forward) {
+        SyncReturn(format!("Failed to add session with id {}, {}", &id, e))
+    } else {
+        SyncReturn("".to_owned())
+    }
+}
+
+pub fn session_start(events2ui: StreamSink<EventToUI>, id: String) -> ResultType<()> {
+    session_start_(&id, events2ui)
 }
 
 pub fn session_get_remember(id: String) -> Option<bool> {
@@ -127,7 +124,7 @@ pub fn session_get_remember(id: String) -> Option<bool> {
 
 pub fn session_get_toggle_option(id: String, arg: String) -> Option<bool> {
     if let Some(session) = SESSIONS.read().unwrap().get(&id) {
-        Some(session.get_toggle_option(&arg))
+        Some(session.get_toggle_option(arg))
     } else {
         None
     }
@@ -138,17 +135,9 @@ pub fn session_get_toggle_option_sync(id: String, arg: String) -> SyncReturn<boo
     SyncReturn(res)
 }
 
-pub fn session_get_image_quality(id: String) -> Option<String> {
-    if let Some(session) = SESSIONS.read().unwrap().get(&id) {
-        Some(session.get_image_quality())
-    } else {
-        None
-    }
-}
-
 pub fn session_get_option(id: String, arg: String) -> Option<String> {
     if let Some(session) = SESSIONS.read().unwrap().get(&id) {
-        Some(session.get_option(&arg))
+        Some(session.get_option(arg))
     } else {
         None
     }
@@ -156,7 +145,7 @@ pub fn session_get_option(id: String, arg: String) -> Option<String> {
 
 pub fn session_login(id: String, password: String, remember: bool) {
     if let Some(session) = SESSIONS.read().unwrap().get(&id) {
-        session.login(&password, remember);
+        session.login(password, remember);
     }
 }
 
@@ -169,7 +158,7 @@ pub fn session_close(id: String) {
 
 pub fn session_refresh(id: String) {
     if let Some(session) = SESSIONS.read().unwrap().get(&id) {
-        session.refresh();
+        session.refresh_video();
     }
 }
 
@@ -180,14 +169,36 @@ pub fn session_reconnect(id: String) {
 }
 
 pub fn session_toggle_option(id: String, value: String) {
+    if let Some(session) = SESSIONS.write().unwrap().get_mut(&id) {
+        session.toggle_option(value);
+    }
+}
+
+pub fn session_get_image_quality(id: String) -> Option<String> {
     if let Some(session) = SESSIONS.read().unwrap().get(&id) {
-        session.toggle_option(&value);
+        Some(session.get_image_quality())
+    } else {
+        None
     }
 }
 
 pub fn session_set_image_quality(id: String, value: String) {
+    if let Some(session) = SESSIONS.write().unwrap().get_mut(&id) {
+        session.save_image_quality(value);
+    }
+}
+
+pub fn session_get_custom_image_quality(id: String) -> Option<Vec<i32>> {
     if let Some(session) = SESSIONS.read().unwrap().get(&id) {
-        session.set_image_quality(&value);
+        Some(session.get_custom_image_quality())
+    } else {
+        None
+    }
+}
+
+pub fn session_set_custom_image_quality(id: String, value: i32) {
+    if let Some(session) = SESSIONS.write().unwrap().get_mut(&id) {
+        session.save_custom_image_quality(value);
     }
 }
 
@@ -206,6 +217,28 @@ pub fn session_ctrl_alt_del(id: String) {
 pub fn session_switch_display(id: String, value: i32) {
     if let Some(session) = SESSIONS.read().unwrap().get(&id) {
         session.switch_display(value);
+    }
+}
+
+pub fn session_handle_flutter_key_event(
+    id: String,
+    name: String,
+    keycode: i32,
+    scancode: i32,
+    down_or_up: bool,
+) {
+    if let Some(session) = SESSIONS.read().unwrap().get(&id) {
+        session.handle_flutter_key_event(&name, keycode, scancode, down_or_up);
+    }
+}
+
+pub fn session_enter_or_leave(id: String, enter: bool) {
+    if let Some(session) = SESSIONS.read().unwrap().get(&id) {
+        if enter {
+            session.enter();
+        } else {
+            session.leave();
+        }
     }
 }
 
@@ -245,9 +278,22 @@ pub fn session_peer_option(id: String, name: String, value: String) {
 
 pub fn session_get_peer_option(id: String, name: String) -> String {
     if let Some(session) = SESSIONS.read().unwrap().get(&id) {
-        return session.get_option(&name);
+        return session.get_option(name);
     }
     "".to_string()
+}
+
+pub fn session_get_keyboard_name(id: String) -> String {
+    if let Some(session) = SESSIONS.read().unwrap().get(&id) {
+        return session.get_keyboard_mode();
+    }
+    "legacy".to_string()
+}
+
+pub fn session_set_keyboard_mode(id: String, keyboard_mode: String) {
+    if let Some(session) = SESSIONS.read().unwrap().get(&id) {
+        session.save_keyboard_mode(keyboard_mode);
+    }
 }
 
 pub fn session_input_os_password(id: String, value: String) {
@@ -327,10 +373,8 @@ pub fn session_create_dir(id: String, act_id: i32, path: String, is_remote: bool
 }
 
 pub fn session_read_local_dir_sync(id: String, path: String, show_hidden: bool) -> String {
-    if let Some(session) = SESSIONS.read().unwrap().get(&id) {
-        if let Ok(fd) = fs::read_dir(&fs::get_path(&path), show_hidden) {
-            return make_fd_to_json(fd);
-        }
+    if let Ok(fd) = fs::read_dir(&fs::get_path(&path), show_hidden) {
+        return make_fd_to_json(fd.id, path, &fd.entries);
     }
     "".to_string()
 }
@@ -375,11 +419,13 @@ pub fn session_resume_job(id: String, act_id: i32, is_remote: bool) {
 }
 
 pub fn main_get_sound_inputs() -> Vec<String> {
-    get_sound_inputs()
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return get_sound_inputs();
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    vec![String::from("")]
 }
 
 pub fn main_change_id(new_id: String) {
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     change_id(new_id)
 }
 
@@ -468,7 +514,7 @@ pub fn main_get_connect_status() -> String {
 
 pub fn main_check_connect_status() {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    check_connect_status(true);
+    check_mouse_time(); // avoid multi calls
 }
 
 pub fn main_is_using_public_server() -> bool {
@@ -519,7 +565,6 @@ pub fn main_forget_password(id: String) {
     forget_password(id)
 }
 
-// TODO APP_DIR & ui_interface
 pub fn main_get_recent_peers() -> String {
     if !config::APP_DIR.read().unwrap().is_empty() {
         let peers: Vec<(String, config::PeerInfoSerde)> = PeerConfig::peers()
@@ -602,7 +647,39 @@ pub fn main_load_lan_peers() {
     };
 }
 
-pub fn session_add_port_forward(id: String, local_port: i32, remote_host: String, remote_port: i32) {
+fn main_broadcast_message(data: &HashMap<&str, &str>) {
+    let apps = vec![
+        flutter::APP_TYPE_DESKTOP_REMOTE,
+        flutter::APP_TYPE_DESKTOP_FILE_TRANSFER,
+        flutter::APP_TYPE_DESKTOP_PORT_FORWARD,
+    ];
+
+    for app in apps {
+        if let Some(s) = flutter::GLOBAL_EVENT_STREAM.read().unwrap().get(app) {
+            s.add(serde_json::ser::to_string(data).unwrap_or("".to_owned()));
+        };
+    }
+}
+
+pub fn main_change_theme(dark: bool) {
+    main_broadcast_message(&HashMap::from([
+        ("name", "theme"),
+        ("dark", &dark.to_string()),
+    ]));
+    send_to_cm(&crate::ipc::Data::Theme(dark));
+}
+
+pub fn main_change_language(lang: String) {
+    main_broadcast_message(&HashMap::from([("name", "language"), ("lang", &lang)]));
+    send_to_cm(&crate::ipc::Data::Language(lang));
+}
+
+pub fn session_add_port_forward(
+    id: String,
+    local_port: i32,
+    remote_host: String,
+    remote_port: i32,
+) {
     if let Some(session) = SESSIONS.write().unwrap().get_mut(&id) {
         session.add_port_forward(local_port, remote_host, remote_port);
     }
@@ -614,10 +691,13 @@ pub fn session_remove_port_forward(id: String, local_port: i32) {
     }
 }
 
+pub fn session_new_rdp(id: String) {
+    if let Some(session) = SESSIONS.write().unwrap().get_mut(&id) {
+        session.new_rdp();
+    }
+}
+
 pub fn main_get_last_remote_id() -> String {
-    // if !config::APP_DIR.read().unwrap().is_empty() {
-    //     res = LocalConfig::get_remote_id();
-    // }
     LocalConfig::get_remote_id()
 }
 
@@ -645,13 +725,13 @@ pub fn main_get_online_statue() -> i64 {
     ONLINE.lock().unwrap().values().max().unwrap_or(&0).clone()
 }
 
-pub fn main_get_clients_state() -> String {
-    get_clients_state()
+pub fn cm_get_clients_state() -> String {
+    crate::ui_cm_interface::get_clients_state()
 }
 
-pub fn main_check_clients_length(length: usize) -> Option<String> {
-    if length != get_clients_length() {
-        Some(get_clients_state())
+pub fn cm_check_clients_length(length: usize) -> Option<String> {
+    if length != crate::ui_cm_interface::get_clients_length() {
+        Some(crate::ui_cm_interface::get_clients_state())
     } else {
         None
     }
@@ -673,11 +753,10 @@ pub fn main_remove_peer(id: String) {
     PeerConfig::remove(&id);
 }
 
-pub fn main_has_hwcodec() -> bool {
-    has_hwcodec()
+pub fn main_has_hwcodec() -> SyncReturn<bool> {
+    SyncReturn(has_hwcodec())
 }
 
-// TODO
 pub fn session_send_mouse(id: String, msg: String) {
     if let Ok(m) = serde_json::from_str::<HashMap<String, String>>(&msg) {
         let alt = m.get("alt").is_some();
@@ -721,6 +800,37 @@ pub fn session_restart_remote_device(id: String) {
     }
 }
 
+pub fn session_get_audit_server_sync(id: String) -> SyncReturn<String> {
+    let res = if let Some(session) = SESSIONS.read().unwrap().get(&id) {
+        session.get_audit_server()
+    } else {
+        "".to_owned()
+    };
+    SyncReturn(res)
+}
+
+pub fn session_send_note(id: String, note: String) {
+    if let Some(session) = SESSIONS.read().unwrap().get(&id) {
+        session.send_note(note)
+    }
+}
+
+pub fn session_supported_hwcodec(id: String) -> String {
+    if let Some(session) = SESSIONS.read().unwrap().get(&id) {
+        let (h264, h265) = session.supported_hwcodec();
+        let msg = HashMap::from([("h264", h264), ("h265", h265)]);
+        serde_json::ser::to_string(&msg).unwrap_or("".to_owned())
+    } else {
+        String::new()
+    }
+}
+
+pub fn session_change_prefer_codec(id: String) {
+    if let Some(session) = SESSIONS.read().unwrap().get(&id) {
+        session.change_prefer_codec();
+    }
+}
+
 pub fn main_set_home_dir(home: String) {
     *config::APP_HOME_DIR.write().unwrap() = home;
 }
@@ -728,7 +838,7 @@ pub fn main_set_home_dir(home: String) {
 pub fn main_stop_service() {
     #[cfg(target_os = "android")]
     {
-        Config::set_option("stop-service".into(), "Y".into());
+        config::Config::set_option("stop-service".into(), "Y".into());
         crate::rendezvous_mediator::RendezvousMediator::restart();
     }
 }
@@ -736,11 +846,9 @@ pub fn main_stop_service() {
 pub fn main_start_service() {
     #[cfg(target_os = "android")]
     {
-        Config::set_option("stop-service".into(), "".into());
+        config::Config::set_option("stop-service".into(), "".into());
         crate::rendezvous_mediator::RendezvousMediator::restart();
     }
-    #[cfg(not(target_os = "android"))]
-    std::thread::spawn(move || start_server(true));
 }
 
 pub fn main_update_temporary_password() {
@@ -755,28 +863,44 @@ pub fn main_check_super_user_permission() -> bool {
     check_super_user_permission()
 }
 
+pub fn main_check_mouse_time() {
+    check_mouse_time();
+}
+
+pub fn main_get_mouse_time() -> f64 {
+    get_mouse_time()
+}
+
+pub fn main_wol(id: String) {
+    crate::lan::send_wol(id)
+}
+
 pub fn cm_send_chat(conn_id: i32, msg: String) {
-    connection_manager::send_chat(conn_id, msg);
+    crate::ui_cm_interface::send_chat(conn_id, msg);
 }
 
 pub fn cm_login_res(conn_id: i32, res: bool) {
-    connection_manager::on_login_res(conn_id, res);
+    if res {
+        crate::ui_cm_interface::authorize(conn_id);
+    } else {
+        crate::ui_cm_interface::close(conn_id);
+    }
 }
 
 pub fn cm_close_connection(conn_id: i32) {
-    connection_manager::close_conn(conn_id);
+    crate::ui_cm_interface::close(conn_id);
 }
 
 pub fn cm_check_click_time(conn_id: i32) {
-    connection_manager::check_click_time(conn_id)
+    crate::ui_cm_interface::check_click_time(conn_id)
 }
 
 pub fn cm_get_click_time() -> f64 {
-    connection_manager::get_click_time() as _
+    crate::ui_cm_interface::get_click_time() as _
 }
 
 pub fn cm_switch_permission(conn_id: i32, name: String, enabled: bool) {
-    connection_manager::switch_permission(conn_id, name, enabled)
+    crate::ui_cm_interface::switch_permission(conn_id, name, enabled)
 }
 
 pub fn main_get_icon() -> String {

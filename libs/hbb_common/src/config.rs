@@ -50,6 +50,7 @@ lazy_static::lazy_static! {
     pub static ref PROD_RENDEZVOUS_SERVER: Arc<RwLock<String>> = Default::default();
     pub static ref APP_NAME: Arc<RwLock<String>> = Arc::new(RwLock::new("RustDesk".to_owned()));
     static ref KEY_PAIR: Arc<Mutex<Option<(Vec<u8>, Vec<u8>)>>> = Default::default();
+    static ref HW_CODEC_CONFIG: Arc<RwLock<HwCodecConfig>> = Arc::new(RwLock::new(HwCodecConfig::load()));
 }
 
 // #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -955,13 +956,18 @@ impl LocalConfig {
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct DiscoveryPeer {
+    #[serde(default)]
     pub id: String,
-    #[serde(with = "serde_with::rust::map_as_tuple_list")]
-    pub ip_mac: HashMap<String, String>,
+    #[serde(default)]
     pub username: String,
+    #[serde(default)]
     pub hostname: String,
+    #[serde(default)]
     pub platform: String,
+    #[serde(default)]
     pub online: bool,
+    #[serde(default)]
+    pub ip_mac: HashMap<String, String>,
 }
 
 impl DiscoveryPeer {
@@ -1022,6 +1028,16 @@ impl HwCodecConfig {
 
     pub fn remove() {
         std::fs::remove_file(Config::file_("_hwcodec")).ok();
+    }
+
+    /// refresh current global HW_CODEC_CONFIG, usually uesd after HwCodecConfig::remove()
+    pub fn refresh() {
+        *HW_CODEC_CONFIG.write().unwrap() = HwCodecConfig::load();
+        log::debug!("HW_CODEC_CONFIG refreshed successfully");
+    }
+
+    pub fn get() -> HwCodecConfig {
+        return HW_CODEC_CONFIG.read().unwrap().clone();
     }
 }
 

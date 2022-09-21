@@ -8,8 +8,10 @@ import 'package:flutter_hbb/desktop/screen/desktop_file_transfer_screen.dart';
 import 'package:flutter_hbb/desktop/screen/desktop_port_forward_screen.dart';
 import 'package:flutter_hbb/desktop/screen/desktop_remote_screen.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
 // import 'package:window_manager/window_manager.dart';
@@ -23,9 +25,9 @@ import 'models/platform_model.dart';
 
 int? windowId;
 
-Future<Null> main(List<String> args) async {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
-  print("launch args: $args");
+  debugPrint("launch args: $args");
 
   if (!isDesktop) {
     runMobileApp();
@@ -36,40 +38,44 @@ Future<Null> main(List<String> args) async {
     windowId = int.parse(args[1]);
     WindowController.fromWindowId(windowId!).showTitleBar(false);
     final argument = args[2].isEmpty
-        ? Map<String, dynamic>()
+        ? <String, dynamic>{}
         : jsonDecode(args[2]) as Map<String, dynamic>;
     int type = argument['type'] ?? -1;
     argument['windowId'] = windowId;
     WindowType wType = type.windowType;
+    restoreWindowPosition(wType, windowId: windowId);
     switch (wType) {
       case WindowType.RemoteDesktop:
+        desktopType = DesktopType.remote;
         runRemoteScreen(argument);
         break;
       case WindowType.FileTransfer:
+        desktopType = DesktopType.fileTransfer;
         runFileTransferScreen(argument);
         break;
       case WindowType.PortForward:
+        desktopType = DesktopType.portForward;
         runPortForwardScreen(argument);
         break;
       default:
         break;
     }
   } else if (args.isNotEmpty && args.first == '--cm') {
-    print("--cm started");
+    debugPrint("--cm started");
+    desktopType = DesktopType.cm;
     await windowManager.ensureInitialized();
     runConnectionManagerScreen();
   } else {
+    desktopType = DesktopType.main;
     await windowManager.ensureInitialized();
     windowManager.setPreventClose(true);
     runMainApp(true);
   }
 }
 
-ThemeData getCurrentTheme() {
-  return isDarkTheme() ? MyTheme.darkTheme : MyTheme.lightTheme;
-}
-
 Future<void> initEnv(String appType) async {
+  // global shared preference
+  await Get.putAsync(() => SharedPreferences.getInstance());
   await platformFFI.init(appType);
   // global FFI, use this **ONLY** for global configuration
   // for convenience, use global FFI on mobile platform
@@ -77,17 +83,13 @@ Future<void> initEnv(String appType) async {
   await initGlobalFFI();
   // await Firebase.initializeApp();
   refreshCurrentUser();
+  _registerEventHandler();
 }
 
 void runMainApp(bool startService) async {
-  WindowOptions windowOptions = getHiddenTitleBarWindowOptions(Size(1280, 720));
-  await Future.wait([
-    initEnv(kAppTypeMain),
-    windowManager.waitUntilReadyToShow(windowOptions, () async {
-      await windowManager.show();
-      await windowManager.focus();
-    })
-  ]);
+  await initEnv(kAppTypeMain);
+  // trigger connection status updater
+  await bind.mainCheckConnectStatus();
   if (startService) {
     // await windowManager.ensureInitialized();
     // disable tray
@@ -95,6 +97,13 @@ void runMainApp(bool startService) async {
     gFFI.serverModel.startService();
   }
   runApp(App());
+  // set window option
+  WindowOptions windowOptions = getHiddenTitleBarWindowOptions();
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
+    restoreWindowPosition(WindowType.Main);
+    await windowManager.show();
+    await windowManager.focus();
+  });
 }
 
 void runMobileApp() async {
@@ -109,11 +118,19 @@ void runRemoteScreen(Map<String, dynamic> argument) async {
     navigatorKey: globalKey,
     debugShowCheckedModeBanner: false,
     title: 'RustDesk - Remote Desktop',
-    theme: getCurrentTheme(),
+    theme: MyTheme.lightTheme,
+    darkTheme: MyTheme.darkTheme,
+    themeMode: MyTheme.initialThemeMode(),
     home: DesktopRemoteScreen(
       params: argument,
     ),
-    navigatorObservers: [
+    localizationsDelegates: const [
+      GlobalMaterialLocalizations.delegate,
+      GlobalWidgetsLocalizations.delegate,
+      GlobalCupertinoLocalizations.delegate,
+    ],
+    supportedLocales: supportedLocales,
+    navigatorObservers: const [
       // FirebaseAnalyticsObserver(analytics: analytics),
     ],
     builder: _keepScaleBuilder(),
@@ -127,9 +144,17 @@ void runFileTransferScreen(Map<String, dynamic> argument) async {
       navigatorKey: globalKey,
       debugShowCheckedModeBanner: false,
       title: 'RustDesk - File Transfer',
-      theme: getCurrentTheme(),
+      theme: MyTheme.lightTheme,
+      darkTheme: MyTheme.darkTheme,
+      themeMode: MyTheme.initialThemeMode(),
       home: DesktopFileTransferScreen(params: argument),
-      navigatorObservers: [
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: supportedLocales,
+      navigatorObservers: const [
         // FirebaseAnalyticsObserver(analytics: analytics),
       ],
       builder: _keepScaleBuilder(),
@@ -144,9 +169,17 @@ void runPortForwardScreen(Map<String, dynamic> argument) async {
       navigatorKey: globalKey,
       debugShowCheckedModeBanner: false,
       title: 'RustDesk - Port Forward',
-      theme: getCurrentTheme(),
+      theme: MyTheme.lightTheme,
+      darkTheme: MyTheme.darkTheme,
+      themeMode: MyTheme.initialThemeMode(),
       home: DesktopPortForwardScreen(params: argument),
-      navigatorObservers: [
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: supportedLocales,
+      navigatorObservers: const [
         // FirebaseAnalyticsObserver(analytics: analytics),
       ],
       builder: _keepScaleBuilder(),
@@ -156,23 +189,31 @@ void runPortForwardScreen(Map<String, dynamic> argument) async {
 
 void runConnectionManagerScreen() async {
   // initialize window
-  WindowOptions windowOptions = getHiddenTitleBarWindowOptions(Size(300, 400));
-  await Future.wait([
-    initEnv(kAppTypeMain),
-    windowManager.waitUntilReadyToShow(windowOptions, () async {
-      await windowManager.setAlignment(Alignment.topRight);
-      await windowManager.show();
-      await windowManager.focus();
-    })
-  ]);
+  WindowOptions windowOptions =
+      getHiddenTitleBarWindowOptions(size: const Size(300, 400));
+  await initEnv(kAppTypeMain);
   runApp(GetMaterialApp(
       debugShowCheckedModeBanner: false,
-      theme: getCurrentTheme(),
-      home: DesktopServerPage(),
+      theme: MyTheme.lightTheme,
+      darkTheme: MyTheme.darkTheme,
+      themeMode: MyTheme.initialThemeMode(),
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: supportedLocales,
+      home: const DesktopServerPage(),
       builder: _keepScaleBuilder()));
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.setAlignment(Alignment.topRight);
+    await windowManager.show();
+    await windowManager.focus();
+    await windowManager.setAlignment(Alignment.topRight); // ensure
+  });
 }
 
-WindowOptions getHiddenTitleBarWindowOptions(Size size) {
+WindowOptions getHiddenTitleBarWindowOptions({Size? size}) {
   return WindowOptions(
     size: size,
     center: true,
@@ -182,7 +223,26 @@ WindowOptions getHiddenTitleBarWindowOptions(Size size) {
   );
 }
 
-class App extends StatelessWidget {
+class App extends StatefulWidget {
+  @override
+  State<App> createState() => _AppState();
+}
+
+class _AppState extends State<App> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.window.onPlatformBrightnessChanged = () {
+      WidgetsBinding.instance.handlePlatformBrightnessChanged();
+      var system =
+          WidgetsBinding.instance.platformDispatcher.platformBrightness;
+      var current = isDarkTheme() ? Brightness.dark : Brightness.light;
+      if (current != system) {
+        MyTheme.changeTo(system == Brightness.dark);
+      }
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
     // final analytics = FirebaseAnalytics.instance;
@@ -201,15 +261,23 @@ class App extends StatelessWidget {
         navigatorKey: globalKey,
         debugShowCheckedModeBanner: false,
         title: 'RustDesk',
-        theme: getCurrentTheme(),
+        theme: MyTheme.lightTheme,
+        darkTheme: MyTheme.darkTheme,
+        themeMode: MyTheme.initialThemeMode(mainPage: true),
         home: isDesktop
-            ? DesktopTabPage()
+            ? const DesktopTabPage()
             : !isAndroid
                 ? WebHomePage()
                 : HomePage(),
-        navigatorObservers: [
+        navigatorObservers: const [
           // FirebaseAnalyticsObserver(analytics: analytics),
         ],
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: supportedLocales,
         builder: isAndroid
             ? (context, child) => AccessibilityListener(
                   child: MediaQuery(
@@ -234,4 +302,18 @@ _keepScaleBuilder() {
       child: child ?? Container(),
     );
   };
+}
+
+_registerEventHandler() {
+  if (isDesktop && desktopType != DesktopType.main) {
+    platformFFI.registerEventHandler('theme', 'theme', (evt) async {
+      String? dark = evt['dark'];
+      if (dark != null) {
+        MyTheme.changeTo(dark == 'true');
+      }
+    });
+    platformFFI.registerEventHandler('language', 'language', (_) async {
+      Get.forceAppUpdate();
+    });
+  }
 }

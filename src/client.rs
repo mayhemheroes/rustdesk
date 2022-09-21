@@ -2,9 +2,9 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     ops::{Deref, Not},
-    sync::{mpsc, Arc, Mutex, RwLock},
+    sync::{atomic::AtomicBool, mpsc, Arc, Mutex, RwLock},
 };
-
+use std::sync::atomic::Ordering;
 pub use async_trait::async_trait;
 #[cfg(not(any(target_os = "android", target_os = "linux")))]
 use cpal::{
@@ -37,7 +37,6 @@ use hbb_common::{
 };
 pub use helper::LatencyController;
 pub use helper::*;
-use scrap::Image;
 use scrap::{
     codec::{Decoder, DecoderCfg},
     VpxDecoderConfig, VpxVideoCodecId,
@@ -47,7 +46,12 @@ pub use super::lang::*;
 
 pub mod file_trait;
 pub mod helper;
+pub mod io_loop;
 
+pub static SERVER_KEYBOARD_ENABLED: AtomicBool = AtomicBool::new(true);
+pub static SERVER_FILE_TRANSFER_ENABLED: AtomicBool = AtomicBool::new(true);
+pub static SERVER_CLIPBOARD_ENABLED: AtomicBool = AtomicBool::new(true);
+pub const MILLI1: Duration = Duration::from_millis(1);
 pub const SEC30: Duration = Duration::from_secs(30);
 
 /// Client of the remote desktop.
@@ -55,7 +59,22 @@ pub struct Client;
 
 #[cfg(not(any(target_os = "android", target_os = "linux")))]
 lazy_static::lazy_static! {
-static ref AUDIO_HOST: Host = cpal::default_host();
+    static ref AUDIO_HOST: Host = cpal::default_host();
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+lazy_static::lazy_static! {
+    static ref ENIGO: Arc<Mutex<enigo::Enigo>> = Arc::new(Mutex::new(enigo::Enigo::new()));
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn get_key_state(key: enigo::Key) -> bool {
+    use enigo::KeyboardControllable;
+    #[cfg(target_os = "macos")]
+    if key == enigo::Key::NumLock {
+        return true;
+    }
+    ENIGO.lock().unwrap().get_key_state(key)
 }
 
 cfg_if::cfg_if! {
@@ -135,7 +154,8 @@ impl Client {
                     return Err(err);
                 }
             }
-            Ok(x) => Ok(x),
+            Ok(x) => {
+                Ok(x)},
         }
     }
 
@@ -846,8 +866,7 @@ impl VideoHandler {
 #[derive(Default)]
 pub struct LoginConfigHandler {
     id: String,
-    pub is_file_transfer: bool,
-    is_port_forward: bool,
+    pub conn_type: ConnType,
     hash: Hash,
     password: Vec<u8>, // remember password for reconnect
     pub remember: bool,
@@ -886,12 +905,10 @@ impl LoginConfigHandler {
     /// # Arguments
     ///
     /// * `id` - id of peer
-    /// * `is_file_transfer` - Whether the connection is file transfer.
-    /// * `is_port_forward` - Whether the connection is port forward.
-    pub fn initialize(&mut self, id: String, is_file_transfer: bool, is_port_forward: bool) {
+    /// * `conn_type` - Connection type enum.
+    pub fn initialize(&mut self, id: String, conn_type: ConnType) {
         self.id = id;
-        self.is_file_transfer = is_file_transfer;
-        self.is_port_forward = is_port_forward;
+        self.conn_type = conn_type;
         let config = self.load_config();
         self.remember = !config.password.is_empty();
         self.config = config;
@@ -1048,7 +1065,8 @@ impl LoginConfigHandler {
     ///
     /// * `ignore_default` - If `true`, ignore the default value of the option.
     fn get_option_message(&self, ignore_default: bool) -> Option<OptionMessage> {
-        if self.is_port_forward || self.is_file_transfer {
+        if self.conn_type.eq(&ConnType::FILE_TRANSFER) || self.conn_type.eq(&ConnType::PORT_FORWARD)
+        {
             return None;
         }
         let mut n = 0;
@@ -1094,7 +1112,8 @@ impl LoginConfigHandler {
     }
 
     pub fn get_option_message_after_login(&self) -> Option<OptionMessage> {
-        if self.is_port_forward || self.is_file_transfer {
+        if self.conn_type.eq(&ConnType::FILE_TRANSFER) || self.conn_type.eq(&ConnType::PORT_FORWARD)
+        {
             return None;
         }
         let mut n = 0;
@@ -1260,13 +1279,13 @@ impl LoginConfigHandler {
     ///
     /// * `username` - The name of the peer.
     /// * `pi` - The peer info.
-    pub fn handle_peer_info(&mut self, username: String, pi: PeerInfo) {
+    pub fn handle_peer_info(&mut self, pi: &PeerInfo) {
         if !pi.version.is_empty() {
             self.version = hbb_common::get_version_number(&pi.version);
         }
-        self.features = pi.features.into_option();
+        self.features = pi.features.clone().into_option();
         let serde = PeerInfoSerde {
-            username,
+            username: pi.username.clone(),
             hostname: pi.hostname.clone(),
             platform: pi.platform.clone(),
         };
@@ -1330,19 +1349,20 @@ impl LoginConfigHandler {
             version: crate::VERSION.to_string(),
             ..Default::default()
         };
-        if self.is_file_transfer {
-            lr.set_file_transfer(FileTransfer {
+        match self.conn_type {
+            ConnType::FILE_TRANSFER => lr.set_file_transfer(FileTransfer {
                 dir: self.get_remote_dir(),
                 show_hidden: !self.get_option("remote_show_hidden").is_empty(),
                 ..Default::default()
-            });
-        } else if self.is_port_forward {
-            lr.set_port_forward(PortForward {
+            }),
+            ConnType::PORT_FORWARD => lr.set_port_forward(PortForward {
                 host: self.port_forward.0.clone(),
                 port: self.port_forward.1,
                 ..Default::default()
-            });
+            }),
+            _ => {}
         }
+
         let mut msg_out = Message::new();
         msg_out.set_login_request(lr);
         msg_out
@@ -1395,11 +1415,9 @@ where
 
     let latency_controller = LatencyController::new();
     let latency_controller_cl = latency_controller.clone();
-    // Create video_handler out of the thread below to ensure that the handler exists before client start.
-    // It will take a few tenths of a second for the first time, and then tens of milliseconds.
-    let mut video_handler = VideoHandler::new(latency_controller);
 
     std::thread::spawn(move || {
+        let mut video_handler = VideoHandler::new(latency_controller);
         loop {
             if let Ok(data) = video_receiver.recv() {
                 match data {
@@ -1646,11 +1664,18 @@ pub async fn handle_login_from_ui(
 /// Interface for client to send data and commands.
 #[async_trait]
 pub trait Interface: Send + Clone + 'static + Sized {
+    /// Send message data to remote peer.
     fn send(&self, data: Data);
     fn msgbox(&self, msgtype: &str, title: &str, text: &str);
     fn handle_login_error(&mut self, err: &str) -> bool;
     fn handle_peer_info(&mut self, pi: PeerInfo);
     fn set_force_relay(&mut self, direct: bool, received: bool);
+    fn is_file_transfer(&self) -> bool;
+    fn is_port_forward(&self) -> bool;
+    fn is_rdp(&self) -> bool;
+    fn on_error(&self, err: &str) {
+        self.msgbox("error", "Error", err);
+    }
     fn is_force_relay(&self) -> bool;
     async fn handle_hash(&mut self, pass: &str, hash: Hash, peer: &mut Stream);
     async fn handle_login_from_ui(&mut self, password: String, remember: bool, peer: &mut Stream);
@@ -1681,7 +1706,7 @@ pub enum Data {
 }
 
 /// Keycode for key events.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Key {
     ControlKey(ControlKey),
     Chr(u32),
@@ -1863,4 +1888,8 @@ fn decode_id_pk(signed: &[u8], key: &sign::PublicKey) -> ResultType<(String, [u8
     } else {
         bail!("Wrong public length");
     }
+}
+
+pub fn disable_keyboard_listening() {
+    crate::ui_session_interface::KEYBOARD_HOOKED.store(false, Ordering::SeqCst);
 }

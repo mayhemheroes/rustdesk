@@ -2,17 +2,21 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui';
 
 import 'package:back_button_interceptor/back_button_interceptor.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
+import 'package:flutter_hbb/utils/multi_window_manager.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'common/widgets/overlay.dart';
 import 'models/model.dart';
 import 'models/platform_model.dart';
 
@@ -26,9 +30,13 @@ var isWeb = false;
 var isWebDesktop = false;
 var version = "";
 int androidVersion = 0;
+const windowPrefix = "wm_";
+DesktopType? desktopType;
 
 typedef F = String Function(String);
 typedef FMethod = String Function(String, dynamic);
+
+typedef StreamEventHandler = Future<void> Function(Map<String, dynamic>);
 
 late final iconKeyboard = MemoryImage(Uint8List.fromList(base64Decode(
     "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAgVBMVEUAAAD///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9d3yJTAAAAKnRSTlMA0Gd/0y8ILZgbJffDPUwV2nvzt+TMqZxyU7CMb1pYQyzsvKunkXE4AwJnNC24AAAA+0lEQVQ4y83O2U7DMBCF4ZMxk9rZk26kpQs7nPd/QJy4EiLbLf01N5Y/2YP/qxDFQvGB5NPC/ZpVnfJx4b5xyGfF95rkHvNCWH1u+N6J6T0sC7gqRy8uGPfBLEbozPXUjlkQKwGaFPNizwQbwkx0TDvhCii34ExZCSQVBdzIOEOyeclSHgBGXkpeygXSQgStACtWx4Z8rr8COHOvfEP/IbbsQAToFUAAV1M408IIjIGYAPoCSNRP7DQutfQTqxuAiH7UUg1FaJR2AGrrx52sK2ye28LZ0wBAEyR6y8X+NADhm1B4fgiiHXbRrTrxpwEY9RdM9wsepnvFHfUDwYEeiwAJr/gAAAAASUVORK5CYII=")));
@@ -40,6 +48,14 @@ late final iconFile = MemoryImage(Uint8List.fromList(base64Decode(
     'iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAUVBMVEUAAAD///////////////////////////////////////////////////////////////////////////////////////////////////////8IN+deAAAAGnRSTlMAH+CAESEN8jyZkcIb5N/ONy3vmHhmiGjUm7UwS+YAAAHZSURBVGje7dnbboMwDIBhBwgQoFAO7Ta//4NOqCAXYZQstatq4r+r5ubrgQSpg8iyC4ZURa+PlIpQYGiwrzyeHtYZjAL8T05O4H8BbbKvFgRa4NoBU8pXeYEkDDgaaLQBcwJrmeErJQB/7wes3QBWGnCIX0+AQycL1PO6BMwPa0nA4ZxbgTvOjUYMGPHRnZkQAY4mxPZBjmy53E7ukSkFKYB/D4XsWZQx64sCeYebOogGsoOBYvv6/UCb8F0IOBZ0TlP6lEYdANY350AJqB9/qPVuOI5evw4A1hgLigAlepnyxW80bcCcwN++A2s82Vcu02ta+ceq9BoL5KGTTRwQPlpqA3gCnwWU2kCDgeWRQPj2jAPCDxgCMjhI6uZnToDpvd/BJeFrJQB/fsAa02gCt3mi1wNuy8GgBNDZlysBNNSrADVSjcJl6vCpUn6jOdx0kz0q6PMhQRa4465SFKhx35cgUCBTwj2/NHwZAb71qR8GEP2H1XcmAtBPTEO67GP6FUUAIKGABbDLQ0EArhN2sAIGesRO+iyy+RMAjckVTlMCKFVAbh/4Af9OPgG61SkDVco3BQGT3GXaDAnTIAcYZDuBTwGsAGDxuBFeAQqIqwoFMlAVLrHr/wId5MPt0nilGgAAAABJRU5ErkJggg==')));
 late final iconRestart = MemoryImage(Uint8List.fromList(base64Decode(
     'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAB7BAAAewQHDaVRTAAAAGXRFWHRTb2Z0d2FyZQB3d3cuaW5rc2NhcGUub3Jnm+48GgAAAbhJREFUWIXVlrFqFGEUhb+7UYxaWCQKlrKKxaZSQVGDJih2tj6MD2DnMwiWvoAIRnENIpZiYxEro6IooiS7SPwsMgNLkk3mjmYmnmb45/73nMNwz/x/qH3gMu2gH6rAU+Blw+Lngau4jpmGxVF7qp1iPWjaQKnZ2WnXbuP/NqAeUPc3ZkA9XDwvqc+BVWCgPlJ7tRwUKThZce819b46VH+pfXVRXVO/q2cSul3VOgZUl0ejq86r39TXI8mqZKDuDEwCw3IREQvAbWAGmMsQZQ0sAl3gHPB1Q+0e8BuYzRDuy2yOiFVgaUxtRf0ETGc4syk4rc6PqU0Cx9j8Zf6dAeAK8Fi9sUXtFjABvEgxJlNwRP2svlNPjbw/q35U36oTFbnyMSwabxb/gB/qA3VBHagrauV7RW0DRfP1IvMlXqkXkhz1DYyQTKtHa/Z2VVMx3IiI+PI3/bCHjuOpFrSnAMpL6QfgTcMGesDx0kBr2BMzsNyi/vtQu8CJlgwsRbZDnWP90NkKaxHxJMOXMqAeAn5u0ydwMCKGY+qbkB3C2W3EKWoXk5zVoHbUZ+6Mh7tl4G4F8RJ3qvL+AfV3r5Vdpj70AAAAAElFTkSuQmCC')));
+
+enum DesktopType {
+  main,
+  remote,
+  fileTransfer,
+  cm,
+  portForward,
+}
 
 class IconFont {
   static const _family1 = 'Tabbar';
@@ -154,7 +170,7 @@ class MyTheme {
     brightness: Brightness.light,
     primarySwatch: Colors.blue,
     visualDensity: VisualDensity.adaptivePlatformDensity,
-    tabBarTheme: TabBarTheme(
+    tabBarTheme: const TabBarTheme(
       labelColor: Colors.black87,
     ),
     splashColor: Colors.transparent,
@@ -162,13 +178,14 @@ class MyTheme {
   ).copyWith(
     extensions: <ThemeExtension<dynamic>>[
       ColorThemeExtension.light,
+      TabbarTheme.light,
     ],
   );
   static ThemeData darkTheme = ThemeData(
     brightness: Brightness.dark,
     primarySwatch: Colors.blue,
     visualDensity: VisualDensity.adaptivePlatformDensity,
-    tabBarTheme: TabBarTheme(
+    tabBarTheme: const TabBarTheme(
       labelColor: Colors.white70,
     ),
     splashColor: Colors.transparent,
@@ -176,17 +193,47 @@ class MyTheme {
   ).copyWith(
     extensions: <ThemeExtension<dynamic>>[
       ColorThemeExtension.dark,
+      TabbarTheme.dark,
     ],
   );
+
+  static changeTo(bool dark) {
+    if (isDarkTheme() != dark) {
+      Get.find<SharedPreferences>().setString("darkTheme", dark ? "Y" : "");
+      Get.changeThemeMode(dark ? ThemeMode.dark : ThemeMode.light);
+      if (desktopType == DesktopType.main) {
+        bind.mainChangeTheme(dark: dark);
+      }
+    }
+  }
+
+  static bool _themeInitialed = false;
+
+  static ThemeMode initialThemeMode({bool mainPage = false}) {
+    bool dark;
+    // Brightnesss is always light on windows, Flutter 3.0.5
+    if (_themeInitialed || !mainPage || Platform.isWindows) {
+      dark = isDarkTheme();
+    } else {
+      dark = WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+          Brightness.dark;
+      Get.find<SharedPreferences>().setString("darkTheme", dark ? "Y" : "");
+    }
+    _themeInitialed = true;
+    return dark ? ThemeMode.dark : ThemeMode.light;
+  }
 
   static ColorThemeExtension color(BuildContext context) {
     return Theme.of(context).extension<ColorThemeExtension>()!;
   }
+
+  static TabbarTheme tabbar(BuildContext context) {
+    return Theme.of(context).extension<TabbarTheme>()!;
+  }
 }
 
 bool isDarkTheme() {
-  final isDark = "Y" == Get.find<SharedPreferences>().getString("darkTheme");
-  return isDark;
+  return "Y" == Get.find<SharedPreferences>().getString("darkTheme");
 }
 
 final ButtonStyle flatButtonStyle = TextButton.styleFrom(
@@ -196,6 +243,32 @@ final ButtonStyle flatButtonStyle = TextButton.styleFrom(
     borderRadius: BorderRadius.all(Radius.circular(2.0)),
   ),
 );
+
+List<Locale> supportedLocales = const [
+  // specify CN/TW to fix CJK issue in flutter
+  Locale('zh', 'CN'),
+  Locale('zh', 'TW'),
+  Locale('zh', 'SG'),
+  Locale('fr'),
+  Locale('de'),
+  Locale('it'),
+  Locale('ja'),
+  Locale('cs'),
+  Locale('pl'),
+  Locale('ko'),
+  Locale('hu'),
+  Locale('pt'),
+  Locale('ru'),
+  Locale('sk'),
+  Locale('id'),
+  Locale('da'),
+  Locale('eo'),
+  Locale('tr'),
+  Locale('vi'),
+  Locale('pl'),
+  Locale('kz'),
+  Locale('en', 'US'),
+];
 
 String formatDurationToTime(Duration duration) {
   var totalTime = duration.inSeconds;
@@ -252,8 +325,10 @@ class Dialog<T> {
 
 class OverlayDialogManager {
   OverlayState? _overlayState;
-  Map<String, Dialog> _dialogs = Map();
+  final Map<String, Dialog> _dialogs = {};
   int _tagCount = 0;
+
+  OverlayEntry? _mobileActionsOverlayEntry;
 
   /// By default OverlayDialogManager use global overlay
   OverlayDialogManager() {
@@ -340,34 +415,95 @@ class OverlayDialogManager {
       {bool clickMaskDismiss = false,
       bool showCancel = true,
       VoidCallback? onCancel}) {
-    show((setState, close) => CustomAlertDialog(
+    show((setState, close) {
+      cancel() {
+        dismissAll();
+        if (onCancel != null) {
+          onCancel();
+        }
+      }
+
+      return CustomAlertDialog(
         content: Container(
-            constraints: BoxConstraints(maxWidth: 240),
+            constraints: const BoxConstraints(maxWidth: 240),
             child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  SizedBox(height: 30),
-                  Center(child: CircularProgressIndicator()),
-                  SizedBox(height: 20),
+                  const SizedBox(height: 30),
+                  const Center(child: CircularProgressIndicator()),
+                  const SizedBox(height: 20),
                   Center(
                       child: Text(translate(text),
-                          style: TextStyle(fontSize: 15))),
-                  SizedBox(height: 20),
+                          style: const TextStyle(fontSize: 15))),
+                  const SizedBox(height: 20),
                   Offstage(
                       offstage: !showCancel,
                       child: Center(
                           child: TextButton(
                               style: flatButtonStyle,
-                              onPressed: () {
-                                dismissAll();
-                                if (onCancel != null) {
-                                  onCancel();
-                                }
-                              },
+                              onPressed: cancel,
                               child: Text(translate('Cancel'),
-                                  style: TextStyle(color: MyTheme.accent)))))
-                ]))));
+                                  style:
+                                      const TextStyle(color: MyTheme.accent)))))
+                ])),
+        onCancel: showCancel ? cancel : null,
+      );
+    });
+  }
+
+  void resetMobileActionsOverlay({FFI? ffi}) {
+    if (_mobileActionsOverlayEntry == null) return;
+    hideMobileActionsOverlay();
+    showMobileActionsOverlay(ffi: ffi);
+  }
+
+  void showMobileActionsOverlay({FFI? ffi}) {
+    if (_mobileActionsOverlayEntry != null) return;
+    if (_overlayState == null) return;
+
+    // compute overlay position
+    final screenW = MediaQuery.of(globalKey.currentContext!).size.width;
+    final screenH = MediaQuery.of(globalKey.currentContext!).size.height;
+    const double overlayW = 200;
+    const double overlayH = 45;
+    final left = (screenW - overlayW) / 2;
+    final top = screenH - overlayH - 80;
+
+    final overlay = OverlayEntry(builder: (context) {
+      final session = ffi ?? gFFI;
+      return DraggableMobileActions(
+        position: Offset(left, top),
+        width: overlayW,
+        height: overlayH,
+        onBackPressed: () => session.tap(MouseButtons.right),
+        onHomePressed: () => session.tap(MouseButtons.wheel),
+        onRecentPressed: () async {
+          session.sendMouse('down', MouseButtons.wheel);
+          await Future.delayed(const Duration(milliseconds: 500));
+          session.sendMouse('up', MouseButtons.wheel);
+        },
+        onHidePressed: () => hideMobileActionsOverlay(),
+      );
+    });
+    _overlayState!.insert(overlay);
+    _mobileActionsOverlayEntry = overlay;
+  }
+
+  void hideMobileActionsOverlay() {
+    if (_mobileActionsOverlayEntry != null) {
+      _mobileActionsOverlayEntry!.remove();
+      _mobileActionsOverlayEntry = null;
+      return;
+    }
+  }
+
+  void toggleMobileActionsOverlay({FFI? ffi}) {
+    if (_mobileActionsOverlayEntry == null) {
+      showMobileActionsOverlay(ffi: ffi);
+    } else {
+      hideMobileActionsOverlay();
+    }
   }
 }
 
@@ -377,18 +513,18 @@ void showToast(String text, {Duration timeout = const Duration(seconds: 2)}) {
   final entry = OverlayEntry(builder: (_) {
     return IgnorePointer(
         child: Align(
-            alignment: Alignment(0.0, 0.8),
+            alignment: const Alignment(0.0, 0.8),
             child: Container(
               decoration: BoxDecoration(
                 color: Colors.black.withOpacity(0.6),
-                borderRadius: BorderRadius.all(
+                borderRadius: const BorderRadius.all(
                   Radius.circular(20),
                 ),
               ),
-              padding: EdgeInsets.symmetric(horizontal: 20, vertical: 5),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
               child: Text(
                 text,
-                style: TextStyle(
+                style: const TextStyle(
                     decoration: TextDecoration.none,
                     fontWeight: FontWeight.w300,
                     fontSize: 18,
@@ -403,23 +539,54 @@ void showToast(String text, {Duration timeout = const Duration(seconds: 2)}) {
 }
 
 class CustomAlertDialog extends StatelessWidget {
-  CustomAlertDialog(
-      {this.title, required this.content, this.actions, this.contentPadding});
+  const CustomAlertDialog(
+      {Key? key,
+      this.title,
+      required this.content,
+      this.actions,
+      this.contentPadding,
+      this.onSubmit,
+      this.onCancel})
+      : super(key: key);
 
   final Widget? title;
   final Widget content;
   final List<Widget>? actions;
   final double? contentPadding;
+  final Function()? onSubmit;
+  final Function()? onCancel;
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      scrollable: true,
-      title: title,
-      contentPadding:
-          EdgeInsets.symmetric(horizontal: contentPadding ?? 25, vertical: 10),
-      content: content,
-      actions: actions,
+    FocusNode focusNode = FocusNode();
+    // request focus if there is no focused FocusNode in the dialog
+    Future.delayed(Duration.zero, () {
+      if (!focusNode.hasFocus) focusNode.requestFocus();
+    });
+    return Focus(
+      focusNode: focusNode,
+      autofocus: true,
+      onKey: (node, key) {
+        if (key.logicalKey == LogicalKeyboardKey.escape) {
+          if (key is RawKeyDownEvent) {
+            onCancel?.call();
+          }
+          return KeyEventResult.handled; // avoid TextField exception on escape
+        } else if (onSubmit != null &&
+            key.logicalKey == LogicalKeyboardKey.enter) {
+          if (key is RawKeyDownEvent) onSubmit?.call();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: AlertDialog(
+        scrollable: true,
+        title: title,
+        contentPadding: EdgeInsets.symmetric(
+            horizontal: contentPadding ?? 25, vertical: 10),
+        content: content,
+        actions: actions,
+      ),
     );
   }
 }
@@ -427,7 +594,50 @@ class CustomAlertDialog extends StatelessWidget {
 void msgBox(
     String type, String title, String text, OverlayDialogManager dialogManager,
     {bool? hasCancel}) {
-  var wrap = (String text, void Function() onPressed) => ButtonTheme(
+  dialogManager.dismissAll();
+  List<Widget> buttons = [];
+  bool hasOk = false;
+  submit() {
+    dialogManager.dismissAll();
+    // https://github.com/fufesou/rustdesk/blob/5e9a31340b899822090a3731769ae79c6bf5f3e5/src/ui/common.tis#L263
+    if (!type.contains("custom") && desktopType != DesktopType.portForward) {
+      closeConnection();
+    }
+  }
+
+  cancel() {
+    dialogManager.dismissAll();
+  }
+
+  if (type != "connecting" && type != "success" && !type.contains("nook")) {
+    hasOk = true;
+    buttons.insert(0, msgBoxButton(translate('OK'), submit));
+  }
+  hasCancel ??= !type.contains("error") &&
+      !type.contains("nocancel") &&
+      type != "restarting";
+  if (hasCancel) {
+    buttons.insert(0, msgBoxButton(translate('Cancel'), cancel));
+  }
+  // TODO: test this button
+  if (type.contains("hasclose")) {
+    buttons.insert(
+        0,
+        msgBoxButton(translate('Close'), () {
+          dialogManager.dismissAll();
+        }));
+  }
+  dialogManager.show((setState, close) => CustomAlertDialog(
+        title: _msgBoxTitle(title),
+        content: Text(translate(text), style: const TextStyle(fontSize: 15)),
+        actions: buttons,
+        onSubmit: hasOk ? submit : null,
+        onCancel: hasCancel == true ? cancel : null,
+      ));
+}
+
+Widget msgBoxButton(String text, void Function() onPressed) {
+  return ButtonTheme(
       padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
       //limits the touch area to the button area
@@ -439,45 +649,21 @@ void msgBox(
           onPressed: onPressed,
           child:
               Text(translate(text), style: TextStyle(color: MyTheme.accent))));
+}
 
+Widget _msgBoxTitle(String title) =>
+    Text(translate(title), style: TextStyle(fontSize: 21));
+
+void msgBoxCommon(OverlayDialogManager dialogManager, String title,
+    Widget content, List<Widget> buttons,
+    {bool hasCancel = true}) {
   dialogManager.dismissAll();
-  List<Widget> buttons = [];
-  if (type != "connecting" && type != "success" && type.indexOf("nook") < 0) {
-    buttons.insert(
-        0,
-        wrap(translate('OK'), () {
-          dialogManager.dismissAll();
-          // https://github.com/fufesou/rustdesk/blob/5e9a31340b899822090a3731769ae79c6bf5f3e5/src/ui/common.tis#L263
-          if (type.indexOf("custom") < 0) {
-            closeConnection();
-          }
-        }));
-  }
-  if (hasCancel == null) {
-    // hasCancel = type != 'error';
-    hasCancel = type.indexOf("error") < 0 &&
-        type.indexOf("nocancel") < 0 &&
-        type != "restarting";
-  }
-  if (hasCancel) {
-    buttons.insert(
-        0,
-        wrap(translate('Cancel'), () {
-          dialogManager.dismissAll();
-        }));
-  }
-  // TODO: test this button
-  if (type.indexOf("hasclose") >= 0) {
-    buttons.insert(
-        0,
-        wrap(translate('Close'), () {
-          dialogManager.dismissAll();
-        }));
-  }
   dialogManager.show((setState, close) => CustomAlertDialog(
-      title: Text(translate(title), style: TextStyle(fontSize: 21)),
-      content: Text(translate(text), style: TextStyle(fontSize: 15)),
-      actions: buttons));
+        title: _msgBoxTitle(title),
+        content: content,
+        actions: buttons,
+        onCancel: hasCancel ? close : null,
+      ));
 }
 
 Color str2color(String str, [alpha = 0xFF]) {
@@ -495,13 +681,13 @@ const G = M * K;
 
 String readableFileSize(double size) {
   if (size < K) {
-    return size.toStringAsFixed(2) + " B";
+    return "${size.toStringAsFixed(2)} B";
   } else if (size < M) {
-    return (size / K).toStringAsFixed(2) + " KB";
+    return "${(size / K).toStringAsFixed(2)} KB";
   } else if (size < G) {
-    return (size / M).toStringAsFixed(2) + " MB";
+    return "${(size / M).toStringAsFixed(2)} MB";
   } else {
-    return (size / G).toStringAsFixed(2) + " GB";
+    return "${(size / G).toStringAsFixed(2)} GB";
   }
 }
 
@@ -574,8 +760,9 @@ class PermissionManager {
     if (isDesktop) {
       return Future.value(true);
     }
-    if (!permissions.contains(type))
+    if (!permissions.contains(type)) {
       return Future.error("Wrong permission!$type");
+    }
     return gFFI.invokeMethod("check_permission", type);
   }
 
@@ -583,8 +770,9 @@ class PermissionManager {
     if (isDesktop) {
       return Future.value(true);
     }
-    if (!permissions.contains(type))
+    if (!permissions.contains(type)) {
       return Future.error("Wrong permission!$type");
+    }
 
     gFFI.invokeMethod("request_permission", type);
     if (type == "ignore_battery_optimizations") {
@@ -664,10 +852,6 @@ Future<void> initGlobalFFI() async {
   debugPrint("_globalFFI init end");
   // after `put`, can also be globally found by Get.find<FFI>();
   Get.put(_globalFFI, permanent: true);
-  // trigger connection status updater
-  await bind.mainCheckConnectStatus();
-  // global shared preference
-  await Get.putAsync(() => SharedPreferences.getInstance());
 }
 
 String translate(String name) {
@@ -744,38 +928,136 @@ Future<List<Peer>>? matchPeers(String searchText, List<Peer> peers) async {
   return filteredList;
 }
 
-class PrivacyModeState {
-  static String tag(String id) => 'privacy_mode_' + id;
-
-  static void init(String id) {
-    final RxBool state = false.obs;
-    Get.put(state, tag: tag(id));
+/// Get the image for the current [platform].
+Widget getPlatformImage(String platform, {double size = 50}) {
+  platform = platform.toLowerCase();
+  if (platform == 'mac os') {
+    platform = 'mac';
+  } else if (platform != 'linux' && platform != 'android') {
+    platform = 'win';
   }
-
-  static void delete(String id) => Get.delete(tag: tag(id));
-  static RxBool find(String id) => Get.find<RxBool>(tag: tag(id));
+  return Image.asset('assets/$platform.png', height: size, width: size);
 }
 
-class BlockInputState {
-  static String tag(String id) => 'block_input_' + id;
+class LastWindowPosition {
+  double? width;
+  double? height;
+  double? offsetWidth;
+  double? offsetHeight;
 
-  static void init(String id) {
-    final RxBool state = false.obs;
-    Get.put(state, tag: tag(id));
+  LastWindowPosition(
+      this.width, this.height, this.offsetWidth, this.offsetHeight);
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      "width": width,
+      "height": height,
+      "offsetWidth": offsetWidth,
+      "offsetHeight": offsetHeight
+    };
   }
 
-  static void delete(String id) => Get.delete(tag: tag(id));
-  static RxBool find(String id) => Get.find<RxBool>(tag: tag(id));
+  @override
+  String toString() {
+    return jsonEncode(toJson());
+  }
+
+  static LastWindowPosition? loadFromString(String content) {
+    if (content.isEmpty) {
+      return null;
+    }
+    try {
+      final m = jsonDecode(content);
+      return LastWindowPosition(
+          m["width"], m["height"], m["offsetWidth"], m["offsetHeight"]);
+    } catch (e) {
+      debugPrint(e.toString());
+      return null;
+    }
+  }
 }
 
-class CurrentDisplayState {
-  static String tag(String id) => 'current_display_' + id;
-
-  static void init(String id) {
-    final RxInt state = RxInt(0);
-    Get.put(state, tag: tag(id));
+/// Save window position and size on exit
+/// Note that windowId must be provided if it's subwindow
+Future<void> saveWindowPosition(WindowType type, {int? windowId}) async {
+  if (type != WindowType.Main && windowId == null) {
+    debugPrint(
+        "Error: windowId cannot be null when saving positions for sub window");
   }
+  switch (type) {
+    case WindowType.Main:
+      List resp = await Future.wait(
+          [windowManager.getPosition(), windowManager.getSize()]);
+      Offset position = resp[0];
+      Size sz = resp[1];
+      final pos =
+          LastWindowPosition(sz.width, sz.height, position.dx, position.dy);
+      await Get.find<SharedPreferences>()
+          .setString(windowPrefix + type.name, pos.toString());
+      break;
+    default:
+      // TODO: implement window
+      break;
+  }
+}
 
-  static void delete(String id) => Get.delete(tag: tag(id));
-  static RxInt find(String id) => Get.find<RxInt>(tag: tag(id));
+/// Save window position and size on exit
+/// Note that windowId must be provided if it's subwindow
+Future<bool> restoreWindowPosition(WindowType type, {int? windowId}) async {
+  if (type != WindowType.Main && windowId == null) {
+    debugPrint(
+        "Error: windowId cannot be null when saving positions for sub window");
+  }
+  switch (type) {
+    case WindowType.Main:
+      var pos =
+          Get.find<SharedPreferences>().getString(windowPrefix + type.name);
+      if (pos == null) {
+        debugPrint("no window position saved, ignore restore");
+        return false;
+      }
+      var lpos = LastWindowPosition.loadFromString(pos);
+      if (lpos == null) {
+        debugPrint("window position saved, but cannot be parsed");
+        return false;
+      }
+      await windowManager.setSize(Size(lpos.width ?? 1280, lpos.height ?? 720));
+      if (lpos.offsetWidth == null || lpos.offsetHeight == null) {
+        await windowManager.center();
+      } else {
+        await windowManager
+            .setPosition(Offset(lpos.offsetWidth!, lpos.offsetHeight!));
+      }
+      return true;
+    default:
+      // TODO: implement subwindow
+      break;
+  }
+  return false;
+}
+
+/// Connect to a peer with [id].
+/// If [isFileTransfer], starts a session only for file transfer.
+/// If [isTcpTunneling], starts a session only for tcp tunneling.
+/// If [isRDP], starts a session only for rdp.
+void connect(BuildContext context, String id,
+    {bool isFileTransfer = false,
+    bool isTcpTunneling = false,
+    bool isRDP = false}) async {
+  if (id == '') return;
+  id = id.replaceAll(' ', '');
+  assert(!(isFileTransfer && isTcpTunneling && isRDP),
+      "more than one connect type");
+
+  FocusScopeNode currentFocus = FocusScope.of(context);
+  if (isFileTransfer) {
+    await rustDeskWinManager.newFileTransfer(id);
+  } else if (isTcpTunneling || isRDP) {
+    await rustDeskWinManager.newPortForward(id, isRDP);
+  } else {
+    await rustDeskWinManager.newRemoteDesktop(id);
+  }
+  if (!currentFocus.hasPrimaryFocus) {
+    currentFocus.unfocus();
+  }
 }

@@ -1,6 +1,9 @@
+// original cm window in Sciter version.
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
 import 'package:flutter_hbb/mobile/pages/chat_page.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
@@ -13,16 +16,20 @@ import '../../models/platform_model.dart';
 import '../../models/server_model.dart';
 
 class DesktopServerPage extends StatefulWidget {
+  const DesktopServerPage({Key? key}) : super(key: key);
+
   @override
-  State<StatefulWidget> createState() => _DesktopServerPageState();
+  State<DesktopServerPage> createState() => _DesktopServerPageState();
 }
 
 class _DesktopServerPageState extends State<DesktopServerPage>
     with WindowListener, AutomaticKeepAliveClientMixin {
+  final tabController = gFFI.serverModel.tabController;
   @override
   void initState() {
     gFFI.ffiModel.updateEventListener("");
     windowManager.addListener(this);
+    tabController.onRemove = (_, id) => onRemoveId(id);
     super.initState();
   }
 
@@ -39,6 +46,13 @@ class _DesktopServerPageState extends State<DesktopServerPage>
     super.onWindowClose();
   }
 
+  void onRemoveId(String id) {
+    if (tabController.state.value.tabs.isEmpty) {
+      windowManager.close();
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     super.build(context);
     return MultiProvider(
@@ -51,18 +65,23 @@ class _DesktopServerPageState extends State<DesktopServerPage>
                   decoration: BoxDecoration(
                       border:
                           Border.all(color: MyTheme.color(context).border!)),
-                  child: Scaffold(
-                    backgroundColor: MyTheme.color(context).bg,
-                    body: Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.start,
-                        children: [
-                          Expanded(child: ConnectionManager()),
-                          SizedBox.fromSize(size: Size(0, 15.0)),
-                        ],
-                      ),
-                    ),
-                  ),
+                  child: Overlay(initialEntries: [
+                    OverlayEntry(builder: (context) {
+                      gFFI.dialogManager.setOverlayState(Overlay.of(context));
+                      return Scaffold(
+                        backgroundColor: MyTheme.color(context).bg,
+                        body: Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.start,
+                            children: [
+                              Expanded(child: ConnectionManager()),
+                              SizedBox.fromSize(size: Size(0, 15.0)),
+                            ],
+                          ),
+                        ),
+                      );
+                    })
+                  ]),
                 )));
   }
 
@@ -81,13 +100,6 @@ class ConnectionManagerState extends State<ConnectionManager> {
     gFFI.serverModel.updateClientState();
     gFFI.serverModel.tabController.onSelected = (index) =>
         gFFI.chatModel.changeCurrentID(gFFI.serverModel.clients[index].id);
-    // test
-    // gFFI.serverModel.clients.forEach((client) {
-    //   DesktopTabBar.onAdd(
-    //       gFFI.serverModel.tabs,
-    //       TabInfo(
-    //           key: client.id.toString(), label: client.name, closable: false));
-    // });
     super.initState();
   }
 
@@ -97,7 +109,7 @@ class ConnectionManagerState extends State<ConnectionManager> {
     return serverModel.clients.isEmpty
         ? Column(
             children: [
-              buildTitleBar(Offstage()),
+              buildTitleBar(),
               Expanded(
                 child: Center(
                   child: Text(translate("Waiting")),
@@ -106,12 +118,11 @@ class ConnectionManagerState extends State<ConnectionManager> {
             ],
           )
         : DesktopTab(
-            theme: isDarkTheme() ? TarBarTheme.dark() : TarBarTheme.light(),
             showTitle: false,
             showMaximize: false,
-            showMinimize: false,
+            showMinimize: true,
+            showClose: true,
             controller: serverModel.tabController,
-            isMainWindow: true,
             pageViewBuilder: (pageView) => Row(children: [
                   Expanded(child: pageView),
                   Consumer<ChatModel>(
@@ -121,20 +132,27 @@ class ConnectionManagerState extends State<ConnectionManager> {
                 ]));
   }
 
-  Widget buildTitleBar(Widget middle) {
-    return GestureDetector(
-      onPanDown: (d) {
-        windowManager.startDragging();
-      },
+  Widget buildTitleBar() {
+    return SizedBox(
+      height: kDesktopRemoteTabBarHeight,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          _AppIcon(),
-          Expanded(child: middle),
+          const _AppIcon(),
+          Expanded(
+            child: GestureDetector(
+              onPanStart: (d) {
+                windowManager.startDragging();
+              },
+              child: Container(
+                color: MyTheme.color(context).bg,
+              ),
+            ),
+          ),
           const SizedBox(
             width: 4.0,
           ),
-          _CloseButton()
+          const _CloseButton()
         ],
       ),
     );
@@ -196,15 +214,16 @@ class _CloseButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Ink(
-      child: InkWell(
-          onTap: () {
-            windowManager.close();
-          },
-          child: Icon(
-            Icons.close,
-            size: 30,
-          )),
+    return IconButton(
+      onPressed: () {
+        windowManager.close();
+      },
+      icon: const Icon(
+        IconFont.close,
+        size: 18,
+      ),
+      splashColor: Colors.transparent,
+      hoverColor: Colors.transparent,
     );
   }
 }
@@ -294,7 +313,8 @@ class _CmHeaderState extends State<_CmHeader>
         Offstage(
           offstage: client.isFileTransfer,
           child: IconButton(
-            onPressed: () => gFFI.chatModel.toggleCMChatPage(client.id),
+            onPressed: () => checkClickTime(
+                client.id, () => gFFI.chatModel.toggleCMChatPage(client.id)),
             icon: Icon(Icons.message_outlined),
           ),
         )
@@ -326,7 +346,8 @@ class _PrivilegeBoardState extends State<_PrivilegeBoard> {
             BoxDecoration(color: enabled ? MyTheme.accent80 : Colors.grey),
         padding: EdgeInsets.all(4.0),
         child: InkWell(
-          onTap: () => onTap?.call(!enabled),
+          onTap: () =>
+              checkClickTime(widget.client.id, () => onTap?.call(!enabled)),
           child: Image(
             image: icon,
             width: 50,
@@ -422,7 +443,8 @@ class _CmControlPanel extends StatelessWidget {
           decoration: BoxDecoration(
               color: Colors.redAccent, borderRadius: BorderRadius.circular(10)),
           child: InkWell(
-              onTap: () => handleDisconnect(context),
+              onTap: () =>
+                  checkClickTime(client.id, () => handleDisconnect(context)),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -447,7 +469,10 @@ class _CmControlPanel extends StatelessWidget {
           decoration: BoxDecoration(
               color: MyTheme.accent, borderRadius: BorderRadius.circular(10)),
           child: InkWell(
-              onTap: () => handleAccept(context),
+              onTap: () => checkClickTime(client.id, () {
+                    handleAccept(context);
+                    windowManager.minimize();
+                  }),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -469,7 +494,8 @@ class _CmControlPanel extends StatelessWidget {
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: Colors.grey)),
           child: InkWell(
-              onTap: () => handleDisconnect(context),
+              onTap: () =>
+                  checkClickTime(client.id, () => handleDisconnect(context)),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -571,4 +597,13 @@ Widget clientInfo(Client client) {
           ],
         ),
       ]));
+}
+
+void checkClickTime(int id, Function() callback) async {
+  var clickCallbackTime = DateTime.now().millisecondsSinceEpoch;
+  await bind.cmCheckClickTime(connId: id);
+  Timer(const Duration(milliseconds: 120), () async {
+    var d = clickCallbackTime - await bind.cmGetClickTime();
+    if (d > 120) callback();
+  });
 }

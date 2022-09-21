@@ -1,4 +1,4 @@
-use hbb_common::{fs, message_proto::*};
+use hbb_common::{fs, message_proto::*, log};
 
 use super::{Data, Interface};
 
@@ -22,9 +22,9 @@ pub trait FileManager: Interface {
 
     #[cfg(any(target_os = "android", target_os = "ios", feature = "cli"))]
     fn read_dir(&self, path: &str, include_hidden: bool) -> String {
-        use crate::common::make_fd_to_json;
+        use crate::flutter::make_fd_to_json;
         match fs::read_dir(&fs::get_path(path), include_hidden) {
-            Ok(fd) => make_fd_to_json(fd),
+            Ok(fd) => make_fd_to_json(fd.id, fd.path, &fd.entries),
             Err(_) => "".into(),
         }
     }
@@ -113,5 +113,27 @@ pub trait FileManager: Interface {
 
     fn resume_job(&self, id: i32, is_remote: bool) {
         self.send(Data::ResumeJob((id, is_remote)));
+    }
+
+    fn set_confirm_override_file(
+        &self,
+        id: i32,
+        file_num: i32,
+        need_override: bool,
+        remember: bool,
+        is_upload: bool,
+    ) {
+        log::info!(
+            "confirm file transfer, job: {}, need_override: {}",
+            id,
+            need_override
+        );
+        self.send(Data::SetConfirmOverrideFile((
+            id,
+            file_num,
+            need_override,
+            remember,
+            is_upload,
+        )));
     }
 }

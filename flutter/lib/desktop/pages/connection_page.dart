@@ -1,39 +1,31 @@
+// main window right pane
+
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:contextmenu/contextmenu.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
-import 'package:flutter_hbb/desktop/widgets/peer_widget.dart';
-import 'package:flutter_hbb/desktop/widgets/peercard_widget.dart';
-import 'package:flutter_hbb/utils/multi_window_manager.dart';
+import 'package:flutter_hbb/common/widgets/address_book.dart';
 import 'package:get/get.dart';
-import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 
 import '../../common.dart';
-import '../../mobile/pages/scan_page.dart';
-import '../../mobile/pages/settings_page.dart';
-import '../../models/model.dart';
+import '../../common/formatter/id_formatter.dart';
+import '../../common/widgets/peer_tab_page.dart';
+import '../../common/widgets/peer_widget.dart';
 import '../../models/platform_model.dart';
-
-// enum RemoteType { recently, favorite, discovered, addressBook }
 
 /// Connection page for connecting to a remote peer.
 class ConnectionPage extends StatefulWidget {
-  ConnectionPage({Key? key}) : super(key: key);
+  const ConnectionPage({Key? key}) : super(key: key);
 
   @override
-  _ConnectionPageState createState() => _ConnectionPageState();
+  State<ConnectionPage> createState() => _ConnectionPageState();
 }
 
 /// State for the connection page.
 class _ConnectionPageState extends State<ConnectionPage> {
   /// Controller for the id input bar.
-  final _idController = TextEditingController();
-
-  /// Update url. If it's not null, means an update is available.
-  var _updateUrl = '';
+  final _idController = IDTextEditingController();
 
   Timer? _updateTimer;
 
@@ -43,9 +35,9 @@ class _ConnectionPageState extends State<ConnectionPage> {
     if (_idController.text.isEmpty) {
       () async {
         final lastRemoteId = await bind.mainGetLastRemoteId();
-        if (lastRemoteId != _idController.text) {
+        if (lastRemoteId != _idController.id) {
           setState(() {
-            _idController.text = lastRemoteId;
+            _idController.id = lastRemoteId;
           });
         }
       }();
@@ -66,16 +58,15 @@ class _ConnectionPageState extends State<ConnectionPage> {
             Expanded(
               child: Column(
                 children: [
-                  getUpdateUI(),
                   Row(
                     children: [
-                      getSearchBarUI(context),
+                      _buildRemoteIDTextField(context),
                     ],
                   ).marginOnly(top: 22),
                   SizedBox(height: 12),
                   Divider(),
                   Expanded(
-                      child: _PeerTabbedPage(
+                      child: PeerTabPage(
                     tabs: [
                       translate('Recent Sessions'),
                       translate('Favorites'),
@@ -86,23 +77,15 @@ class _ConnectionPageState extends State<ConnectionPage> {
                       RecentPeerWidget(),
                       FavoritePeerWidget(),
                       DiscoveredPeerWidget(),
-                      FutureBuilder<Widget>(
-                          future: buildAddressBook(context),
-                          builder: (context, snapshot) {
-                            if (snapshot.hasData) {
-                              return snapshot.data!;
-                            } else {
-                              return Offstage();
-                            }
-                          }),
+                      const AddressBook(),
                     ],
                   )),
                 ],
               ).marginSymmetric(horizontal: 22),
             ),
-            Divider(),
-            SizedBox(height: 50, child: Obx(() => buildStatus()))
-                .paddingSymmetric(horizontal: 12.0)
+            const Divider(),
+            SizedBox(child: Obx(() => buildStatus()))
+                .paddingOnly(bottom: 12, top: 6),
           ]),
     );
   }
@@ -110,51 +93,13 @@ class _ConnectionPageState extends State<ConnectionPage> {
   /// Callback for the connect button.
   /// Connects to the selected peer.
   void onConnect({bool isFileTransfer = false}) {
-    var id = _idController.text.trim();
-    connect(id, isFileTransfer: isFileTransfer);
+    final id = _idController.id;
+    connect(context, id, isFileTransfer: isFileTransfer);
   }
 
-  /// Connect to a peer with [id].
-  /// If [isFileTransfer], starts a session only for file transfer.
-  void connect(String id, {bool isFileTransfer = false}) async {
-    if (id == '') return;
-    id = id.replaceAll(' ', '');
-    if (isFileTransfer) {
-      await rustDeskWinManager.new_file_transfer(id);
-    } else {
-      await rustDeskWinManager.new_remote_desktop(id);
-    }
-    FocusScopeNode currentFocus = FocusScope.of(context);
-    if (!currentFocus.hasPrimaryFocus) {
-      currentFocus.unfocus();
-    }
-  }
-
-  /// UI for software update.
-  /// If [_updateUrl] is not empty, shows a button to update the software.
-  Widget getUpdateUI() {
-    return _updateUrl.isEmpty
-        ? SizedBox(height: 0)
-        : InkWell(
-            onTap: () async {
-              final url = _updateUrl + '.apk';
-              if (await canLaunchUrlString(url)) {
-                await launchUrlString(url);
-              }
-            },
-            child: Container(
-                alignment: AlignmentDirectional.center,
-                width: double.infinity,
-                color: Colors.pinkAccent,
-                padding: EdgeInsets.symmetric(vertical: 12),
-                child: Text(translate('Download new version'),
-                    style: TextStyle(
-                        color: Colors.white, fontWeight: FontWeight.bold))));
-  }
-
-  /// UI for the search bar.
+  /// UI for the remote ID TextField.
   /// Search for a peer and connect to it if the id exists.
-  Widget getSearchBarUI(BuildContext context) {
+  Widget _buildRemoteIDTextField(BuildContext context) {
     RxBool ftHover = false.obs;
     RxBool ftPressed = false.obs;
     RxBool connHover = false.obs;
@@ -166,7 +111,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
     });
     var w = Container(
       width: 320 + 20 * 2,
-      padding: EdgeInsets.fromLTRB(20, 24, 20, 22),
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, 22),
       decoration: BoxDecoration(
         color: MyTheme.color(context).bg,
         borderRadius: const BorderRadius.all(Radius.circular(13)),
@@ -178,42 +123,54 @@ class _ConnectionPageState extends State<ConnectionPage> {
               children: [
                 Text(
                   translate('Control Remote Desktop'),
-                  style: TextStyle(fontSize: 19, height: 1),
+                  style: const TextStyle(fontSize: 19, height: 1),
                 ),
               ],
             ).marginOnly(bottom: 15),
             Row(
               children: [
                 Expanded(
-                  child: TextField(
-                    autocorrect: false,
-                    enableSuggestions: false,
-                    keyboardType: TextInputType.visiblePassword,
-                    style: TextStyle(
-                      fontFamily: 'WorkSans',
-                      fontSize: 22,
-                      height: 1,
-                    ),
-                    decoration: InputDecoration(
-                        hintText: translate('Enter Remote ID'),
-                        hintStyle: TextStyle(
-                            color: MyTheme.color(context).placeholder),
-                        border: OutlineInputBorder(
+                  child: Obx(
+                    () => TextField(
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      keyboardType: TextInputType.visiblePassword,
+                      focusNode: focusNode,
+                      style: const TextStyle(
+                        fontFamily: 'WorkSans',
+                        fontSize: 22,
+                        height: 1,
+                      ),
+                      maxLines: 1,
+                      cursorColor: MyTheme.color(context).text!,
+                      decoration: InputDecoration(
+                          hintText: inputFocused.value
+                              ? null
+                              : translate('Enter Remote ID'),
+                          hintStyle: TextStyle(
+                              color: MyTheme.color(context).placeholder),
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.zero,
+                              borderSide: BorderSide(
+                                  color: MyTheme.color(context).border!)),
+                          enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.zero,
+                              borderSide: BorderSide(
+                                  color: MyTheme.color(context).border!)),
+                          focusedBorder: const OutlineInputBorder(
                             borderRadius: BorderRadius.zero,
-                            borderSide: BorderSide(
-                                color: MyTheme.color(context).placeholder!)),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.zero,
-                          borderSide:
-                              BorderSide(color: MyTheme.button, width: 3),
-                        ),
-                        isDense: true,
-                        contentPadding:
-                            EdgeInsets.symmetric(horizontal: 10, vertical: 12)),
-                    controller: _idController,
-                    onSubmitted: (s) {
-                      onConnect();
-                    },
+                            borderSide:
+                                BorderSide(color: MyTheme.button, width: 3),
+                          ),
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 12)),
+                      controller: _idController,
+                      inputFormatters: [IDTextInputFormatter()],
+                      onSubmitted: (s) {
+                        onConnect();
+                      },
+                    ),
                   ),
                 ),
               ],
@@ -232,8 +189,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
                           onConnect(isFileTransfer: true);
                         },
                         child: Container(
-                          height: 24,
-                          width: 72,
+                          height: 27,
                           alignment: Alignment.center,
                           decoration: BoxDecoration(
                             color: ftPressed.value
@@ -257,10 +213,10 @@ class _ConnectionPageState extends State<ConnectionPage> {
                                 color: ftPressed.value
                                     ? MyTheme.color(context).bg
                                     : MyTheme.color(context).text),
-                          ),
+                          ).marginSymmetric(horizontal: 12),
                         ),
                       )),
-                  SizedBox(
+                  const SizedBox(
                     width: 17,
                   ),
                   Obx(
@@ -270,32 +226,36 @@ class _ConnectionPageState extends State<ConnectionPage> {
                       onTapCancel: () => connPressed.value = false,
                       onHover: (value) => connHover.value = value,
                       onTap: onConnect,
-                      child: Container(
-                        height: 24,
-                        width: 65,
-                        decoration: BoxDecoration(
-                          color: connPressed.value
-                              ? MyTheme.accent
-                              : MyTheme.button,
-                          border: Border.all(
-                            color: connPressed.value
-                                ? MyTheme.accent
-                                : connHover.value
-                                    ? MyTheme.hoverBorder
-                                    : MyTheme.button,
+                      child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            minWidth: 80.0,
                           ),
-                          borderRadius: BorderRadius.circular(5),
-                        ),
-                        child: Center(
-                          child: Text(
-                            translate(
-                              "Connection",
+                          child: Container(
+                            height: 27,
+                            decoration: BoxDecoration(
+                              color: connPressed.value
+                                  ? MyTheme.accent
+                                  : MyTheme.button,
+                              border: Border.all(
+                                color: connPressed.value
+                                    ? MyTheme.accent
+                                    : connHover.value
+                                        ? MyTheme.hoverBorder
+                                        : MyTheme.button,
+                              ),
+                              borderRadius: BorderRadius.circular(5),
                             ),
-                            style: TextStyle(
-                                fontSize: 12, color: MyTheme.color(context).bg),
-                          ),
-                        ),
-                      ),
+                            child: Center(
+                              child: Text(
+                                translate(
+                                  "Connect",
+                                ),
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: MyTheme.color(context).bg),
+                              ),
+                            ).marginSymmetric(horizontal: 12),
+                          )),
                     ),
                   ),
                 ],
@@ -306,7 +266,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
       ),
     );
     return Center(
-        child: Container(constraints: BoxConstraints(maxWidth: 600), child: w));
+        child: Container(
+            constraints: const BoxConstraints(maxWidth: 600), child: w));
   }
 
   @override
@@ -316,91 +277,13 @@ class _ConnectionPageState extends State<ConnectionPage> {
     super.dispose();
   }
 
-  /// Get the image for the current [platform].
-  Widget getPlatformImage(String platform) {
-    platform = platform.toLowerCase();
-    if (platform == 'mac os')
-      platform = 'mac';
-    else if (platform != 'linux' && platform != 'android') platform = 'win';
-    return Image.asset('assets/$platform.png', height: 50);
-  }
-
-  bool hitTag(List<dynamic> selectedTags, List<dynamic> idents) {
-    if (selectedTags.isEmpty) {
-      return true;
-    }
-    if (idents.isEmpty) {
-      return false;
-    }
-    for (final tag in selectedTags) {
-      if (!idents.contains(tag)) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  // /// Show the peer menu and handle user's choice.
-  // /// User might remove the peer or send a file to the peer.
-  // void showPeerMenu(BuildContext context, String id, RemoteType rType) async {
-  //   var items = [
-  //     PopupMenuItem<String>(
-  //         child: Text(translate('Connect')), value: 'connect'),
-  //     PopupMenuItem<String>(
-  //         child: Text(translate('Transfer File')), value: 'file'),
-  //     PopupMenuItem<String>(
-  //         child: Text(translate('TCP Tunneling')), value: 'tcp-tunnel'),
-  //     PopupMenuItem<String>(child: Text(translate('Rename')), value: 'rename'),
-  //     rType == RemoteType.addressBook
-  //         ? PopupMenuItem<String>(
-  //             child: Text(translate('Remove')), value: 'ab-delete')
-  //         : PopupMenuItem<String>(
-  //             child: Text(translate('Remove')), value: 'remove'),
-  //     PopupMenuItem<String>(
-  //         child: Text(translate('Unremember Password')),
-  //         value: 'unremember-password'),
-  //   ];
-  //   if (rType == RemoteType.favorite) {
-  //     items.add(PopupMenuItem<String>(
-  //         child: Text(translate('Remove from Favorites')),
-  //         value: 'remove-fav'));
-  //   } else if (rType != RemoteType.addressBook) {
-  //     items.add(PopupMenuItem<String>(
-  //         child: Text(translate('Add to Favorites')), value: 'add-fav'));
-  //   } else {
-  //     items.add(PopupMenuItem<String>(
-  //         child: Text(translate('Edit Tag')), value: 'ab-edit-tag'));
-  //   }
-  //   var value = await showMenu(
-  //     context: context,
-  //     position: this._menuPos,
-  //     items: items,
-  //     elevation: 8,
-  //   );
-  //   if (value == 'remove') {
-  //     setState(() => gFFI.setByName('remove', '$id'));
-  //     () async {
-  //       removePreference(id);
-  //     }();
-  //   } else if (value == 'file') {
-  //     connect(id, isFileTransfer: true);
-  //   } else if (value == 'add-fav') {
-  //   } else if (value == 'connect') {
-  //     connect(id, isFileTransfer: false);
-  //   } else if (value == 'ab-delete') {
-  //     gFFI.abModel.deletePeer(id);
-  //     await gFFI.abModel.updateAb();
-  //     setState(() {});
-  //   } else if (value == 'ab-edit-tag') {
-  //     abEditTag(id);
-  //   }
-  // }
-
   var svcStopped = false.obs;
   var svcStatusCode = 0.obs;
   var svcIsUsingPublicServer = true.obs;
 
   Widget buildStatus() {
+    final fontSize = 14.0;
+    final textStyle = TextStyle(fontSize: fontSize);
     final light = Container(
       height: 8,
       width: 8,
@@ -408,29 +291,39 @@ class _ConnectionPageState extends State<ConnectionPage> {
         borderRadius: BorderRadius.circular(20),
         color: svcStopped.value ? Colors.redAccent : Colors.green,
       ),
-    ).paddingSymmetric(horizontal: 10.0);
+    ).paddingSymmetric(horizontal: 12.0);
     if (svcStopped.value) {
       return Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           light,
-          Text(translate("Service is not running")),
+          Text(translate("Service is not running"), style: textStyle),
           TextButton(
-              onPressed: () =>
-                  bind.mainSetOption(key: "stop-service", value: ""),
-              child: Text(translate("Start Service")))
+              onPressed: () async {
+                bool checked = await bind.mainCheckSuperUserPermission();
+                if (checked) {
+                  bind.mainSetOption(key: "stop-service", value: "");
+                }
+              },
+              child: Text(translate("Start Service"), style: textStyle))
         ],
       );
     } else {
       if (svcStatusCode.value == 0) {
         return Row(
           crossAxisAlignment: CrossAxisAlignment.center,
-          children: [light, Text(translate("connecting_status"))],
+          children: [
+            light,
+            Text(translate("connecting_status"), style: textStyle)
+          ],
         );
       } else if (svcStatusCode.value == -1) {
         return Row(
           crossAxisAlignment: CrossAxisAlignment.center,
-          children: [light, Text(translate("not_ready_status"))],
+          children: [
+            light,
+            Text(translate("not_ready_status"), style: textStyle)
+          ],
         );
       }
     }
@@ -438,13 +331,15 @@ class _ConnectionPageState extends State<ConnectionPage> {
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         light,
-        Text("${translate('Ready')}"),
+        Text(translate('Ready'), style: textStyle),
+        Text(', ', style: textStyle),
         svcIsUsingPublicServer.value
             ? InkWell(
                 onTap: onUsePublicServerGuide,
                 child: Text(
-                  ', ${translate('setup_server_tip')}',
-                  style: TextStyle(decoration: TextDecoration.underline),
+                  translate('setup_server_tip'),
+                  style: TextStyle(
+                      decoration: TextDecoration.underline, fontSize: fontSize),
                 ),
               )
             : Offstage()
@@ -453,7 +348,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
   }
 
   void onUsePublicServerGuide() {
-    final url = "https://rustdesk.com/blog/id-relay-set/";
+    const url = "https://rustdesk.com/blog/id-relay-set/";
     canLaunchUrlString(url).then((can) {
       if (can) {
         launchUrlString(url);
@@ -467,701 +362,5 @@ class _ConnectionPageState extends State<ConnectionPage> {
         jsonDecode(await bind.mainGetConnectStatus()) as Map<String, dynamic>;
     svcStatusCode.value = status["status_num"];
     svcIsUsingPublicServer.value = await bind.mainIsUsingPublicServer();
-  }
-
-  handleLogin() {
-    loginDialog().then((success) {
-      if (success) {
-        setState(() {});
-      }
-    });
-  }
-
-  Future<Widget> buildAddressBook(BuildContext context) async {
-    final token = await bind.mainGetLocalOption(key: 'access_token');
-    if (token.trim().isEmpty) {
-      return Center(
-        child: InkWell(
-          onTap: handleLogin,
-          child: Text(
-            translate("Login"),
-            style: TextStyle(decoration: TextDecoration.underline),
-          ),
-        ),
-      );
-    }
-    final model = gFFI.abModel;
-    return FutureBuilder(
-        future: model.getAb(),
-        builder: (context, snapshot) {
-          if (snapshot.hasData) {
-            return _buildAddressBook(context);
-          } else if (snapshot.hasError) {
-            return Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(translate("${snapshot.error}")),
-                TextButton(
-                    onPressed: () {
-                      setState(() {});
-                    },
-                    child: Text(translate("Retry")))
-              ],
-            );
-          } else {
-            if (model.abLoading) {
-              return Center(
-                child: CircularProgressIndicator(),
-              );
-            } else if (model.abError.isNotEmpty) {
-              return Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(translate("${model.abError}")),
-                    TextButton(
-                        onPressed: () {
-                          setState(() {});
-                        },
-                        child: Text(translate("Retry")))
-                  ],
-                ),
-              );
-            } else {
-              return Offstage();
-            }
-          }
-        });
-  }
-
-  Widget _buildAddressBook(BuildContext context) {
-    return Row(
-      children: [
-        Card(
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-              side: BorderSide(color: MyTheme.grayBg)),
-          child: Container(
-            width: 200,
-            height: double.infinity,
-            padding: EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
-            child: Column(
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(translate('Tags')),
-                    InkWell(
-                      child: PopupMenuButton(
-                          itemBuilder: (context) => [
-                                PopupMenuItem(
-                                  child: Text(translate("Add ID")),
-                                  value: 'add-id',
-                                ),
-                                PopupMenuItem(
-                                  child: Text(translate("Add Tag")),
-                                  value: 'add-tag',
-                                ),
-                                PopupMenuItem(
-                                  child: Text(translate("Unselect all tags")),
-                                  value: 'unset-all-tag',
-                                ),
-                              ],
-                          onSelected: handleAbOp,
-                          child: Icon(Icons.more_vert_outlined)),
-                    )
-                  ],
-                ),
-                Expanded(
-                  child: Container(
-                    width: double.infinity,
-                    height: double.infinity,
-                    decoration: BoxDecoration(
-                        border: Border.all(color: MyTheme.darkGray)),
-                    child: Obx(
-                      () => Wrap(
-                        children: gFFI.abModel.tags
-                            .map((e) => buildTag(e, gFFI.abModel.selectedTags,
-                                    onTap: () {
-                                  //
-                                  if (gFFI.abModel.selectedTags.contains(e)) {
-                                    gFFI.abModel.selectedTags.remove(e);
-                                  } else {
-                                    gFFI.abModel.selectedTags.add(e);
-                                  }
-                                }))
-                            .toList(),
-                      ),
-                    ),
-                  ).marginSymmetric(vertical: 8.0),
-                )
-              ],
-            ),
-          ),
-        ).marginOnly(right: 8.0),
-        Expanded(
-          child: Align(
-              alignment: Alignment.topLeft, child: AddressBookPeerWidget()),
-        )
-      ],
-    );
-  }
-
-  Widget buildTag(String tagName, RxList<dynamic> rxTags, {Function()? onTap}) {
-    return ContextMenuArea(
-      width: 100,
-      builder: (context) => [
-        ListTile(
-          title: Text(translate("Delete")),
-          onTap: () {
-            gFFI.abModel.deleteTag(tagName);
-            gFFI.abModel.updateAb();
-            Future.delayed(Duration.zero, () => Get.back());
-          },
-        )
-      ],
-      child: GestureDetector(
-        onTap: onTap,
-        child: Obx(
-          () => Container(
-            decoration: BoxDecoration(
-                color: rxTags.contains(tagName) ? Colors.blue : null,
-                border: Border.all(color: MyTheme.darkGray),
-                borderRadius: BorderRadius.circular(10)),
-            margin: EdgeInsets.symmetric(horizontal: 4.0, vertical: 8.0),
-            padding: EdgeInsets.symmetric(vertical: 2.0, horizontal: 8.0),
-            child: Text(
-              tagName,
-              style: TextStyle(
-                  color: rxTags.contains(tagName) ? MyTheme.white : null),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// tag operation
-  void handleAbOp(String value) {
-    if (value == 'add-id') {
-      abAddId();
-    } else if (value == 'add-tag') {
-      abAddTag();
-    } else if (value == 'unset-all-tag') {
-      gFFI.abModel.unsetSelectedTags();
-    }
-  }
-
-  void abAddId() async {
-    var field = "";
-    var msg = "";
-    var isInProgress = false;
-    gFFI.dialogManager.show((setState, close) {
-      return CustomAlertDialog(
-        title: Text(translate("Add ID")),
-        content: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(translate("whitelist_sep")),
-            SizedBox(
-              height: 8.0,
-            ),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    onChanged: (s) {
-                      field = s;
-                    },
-                    maxLines: null,
-                    decoration: InputDecoration(
-                      border: OutlineInputBorder(),
-                      errorText: msg.isEmpty ? null : translate(msg),
-                    ),
-                    controller: TextEditingController(text: field),
-                  ),
-                ),
-              ],
-            ),
-            SizedBox(
-              height: 4.0,
-            ),
-            Offstage(offstage: !isInProgress, child: LinearProgressIndicator())
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () {
-                close();
-              },
-              child: Text(translate("Cancel"))),
-          TextButton(
-              onPressed: () async {
-                setState(() {
-                  msg = "";
-                  isInProgress = true;
-                });
-                field = field.trim();
-                if (field.isEmpty) {
-                  // pass
-                } else {
-                  final ids = field.trim().split(RegExp(r"[\s,;\n]+"));
-                  field = ids.join(',');
-                  for (final newId in ids) {
-                    if (gFFI.abModel.idContainBy(newId)) {
-                      continue;
-                    }
-                    gFFI.abModel.addId(newId);
-                  }
-                  await gFFI.abModel.updateAb();
-                  this.setState(() {});
-                  // final currentPeers
-                }
-                close();
-              },
-              child: Text(translate("OK"))),
-        ],
-      );
-    });
-  }
-
-  void abAddTag() async {
-    var field = "";
-    var msg = "";
-    var isInProgress = false;
-    gFFI.dialogManager.show((setState, close) {
-      return CustomAlertDialog(
-        title: Text(translate("Add Tag")),
-        content: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(translate("whitelist_sep")),
-            SizedBox(
-              height: 8.0,
-            ),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    onChanged: (s) {
-                      field = s;
-                    },
-                    maxLines: null,
-                    decoration: InputDecoration(
-                      border: OutlineInputBorder(),
-                      errorText: msg.isEmpty ? null : translate(msg),
-                    ),
-                    controller: TextEditingController(text: field),
-                  ),
-                ),
-              ],
-            ),
-            SizedBox(
-              height: 4.0,
-            ),
-            Offstage(offstage: !isInProgress, child: LinearProgressIndicator())
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () {
-                close();
-              },
-              child: Text(translate("Cancel"))),
-          TextButton(
-              onPressed: () async {
-                setState(() {
-                  msg = "";
-                  isInProgress = true;
-                });
-                field = field.trim();
-                if (field.isEmpty) {
-                  // pass
-                } else {
-                  final tags = field.trim().split(RegExp(r"[\s,;\n]+"));
-                  field = tags.join(',');
-                  for (final tag in tags) {
-                    gFFI.abModel.addTag(tag);
-                  }
-                  await gFFI.abModel.updateAb();
-                  // final currentPeers
-                }
-                close();
-              },
-              child: Text(translate("OK"))),
-        ],
-      );
-    });
-  }
-
-  void abEditTag(String id) {
-    var isInProgress = false;
-
-    final tags = List.of(gFFI.abModel.tags);
-    var selectedTag = gFFI.abModel.getPeerTags(id).obs;
-
-    gFFI.dialogManager.show((setState, close) {
-      return CustomAlertDialog(
-        title: Text(translate("Edit Tag")),
-        content: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-              child: Wrap(
-                children: tags
-                    .map((e) => buildTag(e, selectedTag, onTap: () {
-                          if (selectedTag.contains(e)) {
-                            selectedTag.remove(e);
-                          } else {
-                            selectedTag.add(e);
-                          }
-                        }))
-                    .toList(growable: false),
-              ),
-            ),
-            Offstage(offstage: !isInProgress, child: LinearProgressIndicator())
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () {
-                close();
-              },
-              child: Text(translate("Cancel"))),
-          TextButton(
-              onPressed: () async {
-                setState(() {
-                  isInProgress = true;
-                });
-                gFFI.abModel.changeTagForPeer(id, selectedTag);
-                await gFFI.abModel.updateAb();
-                close();
-              },
-              child: Text(translate("OK"))),
-        ],
-      );
-    });
-  }
-}
-
-class WebMenu extends StatefulWidget {
-  @override
-  _WebMenuState createState() => _WebMenuState();
-}
-
-class _WebMenuState extends State<WebMenu> {
-  String? username;
-  String url = "";
-
-  @override
-  void initState() {
-    super.initState();
-    () async {
-      final usernameRes = await getUsername();
-      final urlRes = await getUrl();
-      var update = false;
-      if (usernameRes != username) {
-        username = usernameRes;
-        update = true;
-      }
-      if (urlRes != url) {
-        url = urlRes;
-        update = true;
-      }
-
-      if (update) {
-        setState(() {});
-      }
-    }();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    Provider.of<FfiModel>(context);
-    return PopupMenuButton<String>(
-        icon: Icon(Icons.more_vert),
-        itemBuilder: (context) {
-          return (isIOS
-                  ? [
-                      PopupMenuItem(
-                        child: Icon(Icons.qr_code_scanner, color: Colors.black),
-                        value: "scan",
-                      )
-                    ]
-                  : <PopupMenuItem<String>>[]) +
-              [
-                PopupMenuItem(
-                  child: Text(translate('ID/Relay Server')),
-                  value: "server",
-                )
-              ] +
-              (url.contains('admin.rustdesk.com')
-                  ? <PopupMenuItem<String>>[]
-                  : [
-                      PopupMenuItem(
-                        child: Text(username == null
-                            ? translate("Login")
-                            : translate("Logout") + ' ($username)'),
-                        value: "login",
-                      )
-                    ]) +
-              [
-                PopupMenuItem(
-                  child: Text(translate('About') + ' RustDesk'),
-                  value: "about",
-                )
-              ];
-        },
-        onSelected: (value) {
-          if (value == 'server') {
-            showServerSettings(gFFI.dialogManager);
-          }
-          if (value == 'about') {
-            showAbout(gFFI.dialogManager);
-          }
-          if (value == 'login') {
-            if (username == null) {
-              showLogin(gFFI.dialogManager);
-            } else {
-              logout(gFFI.dialogManager);
-            }
-          }
-          if (value == 'scan') {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (BuildContext context) => ScanPage(),
-              ),
-            );
-          }
-        });
-  }
-}
-
-class _PeerTabbedPage extends StatefulWidget {
-  final List<String> tabs;
-  final List<Widget> children;
-  const _PeerTabbedPage({required this.tabs, required this.children, Key? key})
-      : super(key: key);
-  @override
-  _PeerTabbedPageState createState() => _PeerTabbedPageState();
-}
-
-class _PeerTabbedPageState extends State<_PeerTabbedPage>
-    with SingleTickerProviderStateMixin {
-  late PageController _pageController = PageController();
-  RxInt _tabIndex = 0.obs;
-
-  @override
-  void initState() {
-    super.initState();
-  }
-
-  // hard code for now
-  void _handleTabSelection(int index) {
-    // reset search text
-    peerSearchText.value = "";
-    peerSearchTextController.clear();
-    _tabIndex.value = index;
-    _pageController.jumpToPage(index);
-    switch (index) {
-      case 0:
-        bind.mainLoadRecentPeers();
-        break;
-      case 1:
-        bind.mainLoadFavPeers();
-        break;
-      case 2:
-        bind.mainDiscover();
-        break;
-      case 3:
-        break;
-    }
-  }
-
-  @override
-  void dispose() {
-    _pageController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      textBaseline: TextBaseline.ideographic,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          height: 28,
-          child: Row(
-            children: [
-              Expanded(child: _createTabBar(context)),
-              _createSearchBar(context),
-              _createPeerViewTypeSwitch(context),
-            ],
-          ),
-        ),
-        _createTabBarView(),
-      ],
-    );
-  }
-
-  Widget _createTabBar(BuildContext context) {
-    return ListView(
-        scrollDirection: Axis.horizontal,
-        shrinkWrap: true,
-        children: super.widget.tabs.asMap().entries.map((t) {
-          return Obx(() => GestureDetector(
-                child: Container(
-                    padding: EdgeInsets.symmetric(horizontal: 8),
-                    decoration: BoxDecoration(
-                      color: _tabIndex.value == t.key
-                          ? MyTheme.color(context).bg
-                          : null,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                    child: Align(
-                      alignment: Alignment.center,
-                      child: Text(
-                        t.value,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                            height: 1,
-                            fontSize: 14,
-                            color: _tabIndex.value == t.key
-                                ? MyTheme.color(context).text
-                                : MyTheme.color(context).lightText),
-                      ),
-                    )),
-                onTap: () => _handleTabSelection(t.key),
-              ));
-        }).toList());
-  }
-
-  Widget _createTabBarView() {
-    return Expanded(
-        child: PageView(
-                controller: _pageController, children: super.widget.children)
-            .marginSymmetric(vertical: 12));
-  }
-
-  _createSearchBar(BuildContext context) {
-    RxBool focused = false.obs;
-    FocusNode focusNode = FocusNode();
-    focusNode.addListener(() => focused.value = focusNode.hasFocus);
-    RxBool rowHover = false.obs;
-    RxBool clearHover = false.obs;
-    return Container(
-      width: 120,
-      height: 25,
-      margin: EdgeInsets.only(right: 13),
-      decoration: BoxDecoration(color: MyTheme.color(context).bg),
-      child: Obx(() => Row(
-            children: [
-              Expanded(
-                child: MouseRegion(
-                  onEnter: (_) => rowHover.value = true,
-                  onExit: (_) => rowHover.value = false,
-                  child: Row(
-                    children: [
-                      Icon(
-                        IconFont.search,
-                        size: 16,
-                        color: MyTheme.color(context).placeholder,
-                      ).marginSymmetric(horizontal: 4),
-                      Expanded(
-                        child: TextField(
-                          controller: peerSearchTextController,
-                          onChanged: (searchText) {
-                            peerSearchText.value = searchText;
-                          },
-                          focusNode: focusNode,
-                          textAlign: TextAlign.start,
-                          maxLines: 1,
-                          cursorColor: MyTheme.color(context).lightText,
-                          cursorHeight: 18,
-                          cursorWidth: 1,
-                          style: TextStyle(fontSize: 14),
-                          decoration: InputDecoration(
-                            contentPadding: EdgeInsets.symmetric(vertical: 6),
-                            hintText:
-                                focused.value ? null : translate("Search ID"),
-                            hintStyle: TextStyle(
-                                fontSize: 14,
-                                color: MyTheme.color(context).placeholder),
-                            border: InputBorder.none,
-                            isDense: true,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              Offstage(
-                offstage: !(peerSearchText.value.isNotEmpty &&
-                    (rowHover.value || clearHover.value)),
-                child: InkWell(
-                    onHover: (value) => clearHover.value = value,
-                    child: Icon(
-                      IconFont.round_close,
-                      size: 16,
-                      color: clearHover.value
-                          ? MyTheme.color(context).text
-                          : MyTheme.color(context).placeholder,
-                    ).marginSymmetric(horizontal: 4),
-                    onTap: () {
-                      peerSearchTextController.clear();
-                      peerSearchText.value = "";
-                    }),
-              )
-            ],
-          )),
-    );
-  }
-
-  _createPeerViewTypeSwitch(BuildContext context) {
-    final activeDeco = BoxDecoration(color: MyTheme.color(context).bg);
-    return Row(
-      children: [
-        Obx(
-          () => Container(
-            padding: EdgeInsets.all(4.0),
-            decoration:
-                peerCardUiType.value == PeerUiType.grid ? activeDeco : null,
-            child: InkWell(
-                onTap: () {
-                  peerCardUiType.value = PeerUiType.grid;
-                },
-                child: Icon(
-                  Icons.grid_view_rounded,
-                  size: 18,
-                  color: peerCardUiType.value == PeerUiType.grid
-                      ? MyTheme.color(context).text
-                      : MyTheme.color(context).lightText,
-                )),
-          ),
-        ),
-        Obx(
-          () => Container(
-            padding: EdgeInsets.all(4.0),
-            decoration:
-                peerCardUiType.value == PeerUiType.list ? activeDeco : null,
-            child: InkWell(
-                onTap: () {
-                  peerCardUiType.value = PeerUiType.list;
-                },
-                child: Icon(
-                  Icons.list,
-                  size: 18,
-                  color: peerCardUiType.value == PeerUiType.list
-                      ? MyTheme.color(context).text
-                      : MyTheme.color(context).lightText,
-                )),
-          ),
-        ),
-      ],
-    );
   }
 }

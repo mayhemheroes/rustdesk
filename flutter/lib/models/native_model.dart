@@ -22,7 +22,7 @@ class RgbaFrame extends Struct {
 
 typedef F2 = Pointer<Utf8> Function(Pointer<Utf8>, Pointer<Utf8>);
 typedef F3 = void Function(Pointer<Utf8>, Pointer<Utf8>);
-typedef HandleEvent = void Function(Map<String, dynamic> evt);
+typedef HandleEvent = Future<void> Function(Map<String, dynamic> evt);
 
 /// FFI wrapper around the native Rust core.
 /// Hides the platform differences.
@@ -30,15 +30,15 @@ class PlatformFFI {
   String _dir = '';
   String _homeDir = '';
   F2? _translate;
-  var _eventHandlers = Map<String, Map<String, HandleEvent>>();
+  final _eventHandlers = <String, Map<String, HandleEvent>>{};
   late RustdeskImpl _ffiBind;
   late String _appType;
-  void Function(Map<String, dynamic>)? _eventCallback;
+  StreamEventHandler? _eventCallback;
 
   PlatformFFI._();
 
   static final PlatformFFI instance = PlatformFFI._();
-  final _toAndroidChannel = MethodChannel("mChannel");
+  final _toAndroidChannel = const MethodChannel('mChannel');
 
   RustdeskImpl get ffiBind => _ffiBind;
 
@@ -50,27 +50,27 @@ class PlatformFFI {
   }
 
   bool registerEventHandler(
-      String event_name, String handler_name, HandleEvent handler) {
-    debugPrint('registerEventHandler $event_name $handler_name');
-    var handlers = _eventHandlers[event_name];
+      String eventName, String handlerName, HandleEvent handler) {
+    debugPrint('registerEventHandler $eventName $handlerName');
+    var handlers = _eventHandlers[eventName];
     if (handlers == null) {
-      _eventHandlers[event_name] = {handler_name: handler};
+      _eventHandlers[eventName] = {handlerName: handler};
       return true;
     } else {
-      if (handlers.containsKey(handler_name)) {
+      if (handlers.containsKey(handlerName)) {
         return false;
       } else {
-        handlers[handler_name] = handler;
+        handlers[handlerName] = handler;
         return true;
       }
     }
   }
 
-  void unregisterEventHandler(String event_name, String handler_name) {
-    debugPrint('unregisterEventHandler $event_name $handler_name');
-    var handlers = _eventHandlers[event_name];
+  void unregisterEventHandler(String eventName, String handlerName) {
+    debugPrint('unregisterEventHandler $eventName $handlerName');
+    var handlers = _eventHandlers[eventName];
     if (handlers != null) {
-      handlers.remove(handler_name);
+      handlers.remove(handlerName);
     }
   }
 
@@ -88,7 +88,7 @@ class PlatformFFI {
   }
 
   /// Init the FFI class, loads the native Rust core library.
-  Future<Null> init(String appType) async {
+  Future<void> init(String appType) async {
     _appType = appType;
     // if (isDesktop) {
     //   // TODO
@@ -97,13 +97,13 @@ class PlatformFFI {
     final dylib = Platform.isAndroid
         ? DynamicLibrary.open('librustdesk.so')
         : Platform.isLinux
-            ? DynamicLibrary.open("/usr/lib/rustdesk/librustdesk.so")
+            ? DynamicLibrary.open('librustdesk.so')
             : Platform.isWindows
-                ? DynamicLibrary.open("librustdesk.dll")
+                ? DynamicLibrary.open('librustdesk.dll')
                 : Platform.isMacOS
-                    ? DynamicLibrary.open("librustdesk.dylib")
+                    ? DynamicLibrary.open('librustdesk.dylib')
                     : DynamicLibrary.process();
-    debugPrint('initializing FFI ${_appType}');
+    debugPrint('initializing FFI $_appType');
     try {
       _translate = dylib.lookupFunction<F2, F2>('translate');
       _dir = (await getApplicationDocumentsDirectory()).path;
@@ -114,10 +114,10 @@ class PlatformFFI {
           // only support for android
           _homeDir = (await ExternalPath.getExternalStorageDirectories())[0];
         } else {
-          _homeDir = (await getDownloadsDirectory())?.path ?? "";
+          _homeDir = (await getDownloadsDirectory())?.path ?? '';
         }
       } catch (e) {
-        print(e);
+        debugPrint('initialize failed: $e');
       }
       String id = 'NA';
       String name = 'Flutter';
@@ -129,42 +129,48 @@ class PlatformFFI {
         androidVersion = androidInfo.version.sdkInt ?? 0;
       } else if (Platform.isIOS) {
         IosDeviceInfo iosInfo = await deviceInfo.iosInfo;
-        name = iosInfo.utsname.machine ?? "";
+        name = iosInfo.utsname.machine ?? '';
         id = iosInfo.identifierForVendor.hashCode.toString();
       } else if (Platform.isLinux) {
         LinuxDeviceInfo linuxInfo = await deviceInfo.linuxInfo;
         name = linuxInfo.name;
         id = linuxInfo.machineId ?? linuxInfo.id;
       } else if (Platform.isWindows) {
-        WindowsDeviceInfo winInfo = await deviceInfo.windowsInfo;
-        name = winInfo.computerName;
-        id = winInfo.computerName;
+        try {
+          WindowsDeviceInfo winInfo = await deviceInfo.windowsInfo;
+          name = winInfo.computerName;
+          id = winInfo.computerName;
+        } catch (e) {
+          debugPrint("$e");
+          name = "unknown";
+          id = "unknown";
+        }
       } else if (Platform.isMacOS) {
         MacOsDeviceInfo macOsInfo = await deviceInfo.macOsInfo;
         name = macOsInfo.computerName;
-        id = macOsInfo.systemGUID ?? "";
+        id = macOsInfo.systemGUID ?? '';
       }
-      print(
-          "_appType:$_appType,info1-id:$id,info2-name:$name,dir:$_dir,homeDir:$_homeDir");
+      debugPrint(
+          '_appType:$_appType,info1-id:$id,info2-name:$name,dir:$_dir,homeDir:$_homeDir');
       await _ffiBind.mainDeviceId(id: id);
       await _ffiBind.mainDeviceName(name: name);
       await _ffiBind.mainSetHomeDir(home: _homeDir);
       await _ffiBind.mainInit(appDir: _dir);
     } catch (e) {
-      print(e);
+      debugPrint('initialize failed: $e');
     }
     version = await getVersion();
   }
 
-  bool _tryHandle(Map<String, dynamic> evt) {
+  Future<bool> _tryHandle(Map<String, dynamic> evt) async {
     final name = evt['name'];
     if (name != null) {
       final handlers = _eventHandlers[name];
       if (handlers != null) {
         if (handlers.isNotEmpty) {
-          handlers.values.forEach((handler) {
-            handler(evt);
-          });
+          for (var handler in handlers.values) {
+            await handler(evt);
+          }
           return true;
         }
       }
@@ -180,19 +186,19 @@ class PlatformFFI {
         try {
           Map<String, dynamic> event = json.decode(message);
           // _tryHandle here may be more flexible than _eventCallback
-          if (!_tryHandle(event)) {
+          if (!await _tryHandle(event)) {
             if (_eventCallback != null) {
-              _eventCallback!(event);
+              await _eventCallback!(event);
             }
           }
         } catch (e) {
-          print('json.decode fail(): $e');
+          debugPrint('json.decode fail(): $e');
         }
       }
     }();
   }
 
-  void setEventCallback(void Function(Map<String, dynamic>) fun) async {
+  void setEventCallback(StreamEventHandler fun) async {
     _eventCallback = fun;
   }
 

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
@@ -10,11 +11,11 @@ import 'package:provider/provider.dart';
 import 'package:wakelock/wakelock.dart';
 
 import '../../common.dart';
+import '../../consts.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
 import '../widgets/dialog.dart';
 import '../widgets/gestures.dart';
-import '../widgets/overlay.dart';
 
 final initText = '\1' * 1024;
 
@@ -64,7 +65,7 @@ class _RemotePageState extends State<RemotePage> {
 
   @override
   void dispose() {
-    hideMobileActionsOverlay();
+    gFFI.dialogManager.hideMobileActionsOverlay();
     gFFI.listenToMouse(false);
     gFFI.invokeMethod("enable_soft_keyboard", true);
     _mobileFocusNode.dispose();
@@ -212,8 +213,8 @@ class _RemotePageState extends State<RemotePage> {
 
   void sendRawKey(RawKeyEvent e, {bool? down, bool? press}) {
     // for maximum compatibility
-    final label = _logicalKeyMap[e.logicalKey.keyId] ??
-        _physicalKeyMap[e.physicalKey.usbHidUsage] ??
+    final label = logicalKeyMap[e.logicalKey.keyId] ??
+        physicalKeyMap[e.physicalKey.usbHidUsage] ??
         e.logicalKey.keyLabel;
     gFFI.inputKey(label, down: down, press: press ?? false);
   }
@@ -266,8 +267,9 @@ class _RemotePageState extends State<RemotePage> {
                             : SafeArea(child:
                                 OrientationBuilder(builder: (ctx, orientation) {
                                 if (_currentOrientation != orientation) {
-                                  Timer(Duration(milliseconds: 200), () {
-                                    resetMobileActionsOverlay();
+                                  Timer(const Duration(milliseconds: 200), () {
+                                    gFFI.dialogManager
+                                        .resetMobileActionsOverlay(ffi: gFFI);
                                     _currentOrientation = orientation;
                                     gFFI.canvasModel.updateViewStyle();
                                   });
@@ -422,14 +424,9 @@ class _RemotePageState extends State<RemotePage> {
                           ? [
                               IconButton(
                                 color: Colors.white,
-                                icon: Icon(Icons.build),
-                                onPressed: () {
-                                  if (mobileActionsOverlayEntry == null) {
-                                    showMobileActionsOverlay();
-                                  } else {
-                                    hideMobileActionsOverlay();
-                                  }
-                                },
+                                icon: const Icon(Icons.build),
+                                onPressed: () => gFFI.dialogManager
+                                    .toggleMobileActionsOverlay(ffi: gFFI),
                               )
                             ]
                           : [
@@ -764,6 +761,7 @@ class _RemotePageState extends State<RemotePage> {
             expand: false,
             builder: (context, scrollController) {
               return SingleChildScrollView(
+                  controller: ScrollController(),
                   padding: EdgeInsets.symmetric(vertical: 10),
                   child: GestureHelp(
                       touchMode: gFFI.ffiModel.touchMode,
@@ -1014,17 +1012,22 @@ class QualityMonitor extends StatelessWidget {
 void showOptions(String id, OverlayDialogManager dialogManager) async {
   String quality = await bind.sessionGetImageQuality(id: id) ?? 'balanced';
   if (quality == '') quality = 'balanced';
+  String codec =
+      await bind.sessionGetOption(id: id, arg: 'codec-preference') ?? 'auto';
+  if (codec == '') codec = 'auto';
   String viewStyle =
       await bind.sessionGetOption(id: id, arg: 'view-style') ?? '';
+
   var displays = <Widget>[];
   final pi = gFFI.ffiModel.pi;
   final image = gFFI.ffiModel.getConnectionImage();
-  if (image != null)
+  if (image != null) {
     displays.add(Padding(padding: const EdgeInsets.only(top: 8), child: image));
+  }
   if (pi.displays.length > 1) {
     final cur = pi.currentDisplay;
     final children = <Widget>[];
-    for (var i = 0; i < pi.displays.length; ++i)
+    for (var i = 0; i < pi.displays.length; ++i) {
       children.add(InkWell(
           onTap: () {
             if (i == cur) return;
@@ -1041,6 +1044,7 @@ void showOptions(String id, OverlayDialogManager dialogManager) async {
                   child: Text((i + 1).toString(),
                       style: TextStyle(
                           color: i == cur ? Colors.white : Colors.black87))))));
+    }
     displays.add(Padding(
         padding: const EdgeInsets.only(top: 8),
         child: Wrap(
@@ -1050,9 +1054,21 @@ void showOptions(String id, OverlayDialogManager dialogManager) async {
         )));
   }
   if (displays.isNotEmpty) {
-    displays.add(Divider(color: MyTheme.border));
+    displays.add(const Divider(color: MyTheme.border));
   }
   final perms = gFFI.ffiModel.permissions;
+  final hasHwcodec = bind.mainHasHwcodec();
+  final List<bool> codecs = [];
+  if (hasHwcodec) {
+    try {
+      final Map codecsJson =
+          jsonDecode(await bind.sessionSupportedHwcodec(id: id));
+      final h264 = codecsJson['h264'] ?? false;
+      final h265 = codecsJson['h265'] ?? false;
+      codecs.add(h264);
+      codecs.add(h265);
+    } finally {}
+  }
 
   dialogManager.show((setState, close) {
     final more = <Widget>[];
@@ -1060,51 +1076,77 @@ void showOptions(String id, OverlayDialogManager dialogManager) async {
       more.add(getToggle(id, setState, 'disable-audio', 'Mute'));
     }
     if (perms['keyboard'] != false) {
-      if (perms['clipboard'] != false)
+      if (perms['clipboard'] != false) {
         more.add(
             getToggle(id, setState, 'disable-clipboard', 'Disable clipboard'));
+      }
       more.add(getToggle(
           id, setState, 'lock-after-session-end', 'Lock after session end'));
       if (pi.platform == 'Windows') {
         more.add(getToggle(id, setState, 'privacy-mode', 'Privacy mode'));
       }
     }
-    var setQuality = (String? value) {
+    setQuality(String? value) {
       if (value == null) return;
       setState(() {
         quality = value;
         bind.sessionSetImageQuality(id: id, value: value);
       });
-    };
-    var setViewStyle = (String? value) {
+    }
+
+    setViewStyle(String? value) {
       if (value == null) return;
       setState(() {
         viewStyle = value;
-        bind.sessionPeerOption(id: id, name: "view-style", value: value);
-        gFFI.canvasModel.updateViewStyle();
+        bind
+            .sessionPeerOption(id: id, name: "view-style", value: value)
+            .then((_) => gFFI.canvasModel.updateViewStyle());
       });
-    };
+    }
+
+    setCodec(String? value) {
+      if (value == null) return;
+      setState(() {
+        codec = value;
+        bind
+            .sessionPeerOption(id: id, name: "codec-preference", value: value)
+            .then((_) => bind.sessionChangePreferCodec(id: id));
+      });
+    }
+
+    final radios = [
+      getRadio('Scale original', 'original', viewStyle, setViewStyle),
+      getRadio('Scale adaptive', 'adaptive', viewStyle, setViewStyle),
+      const Divider(color: MyTheme.border),
+      getRadio('Good image quality', 'best', quality, setQuality),
+      getRadio('Balanced', 'balanced', quality, setQuality),
+      getRadio('Optimize reaction time', 'low', quality, setQuality),
+      const Divider(color: MyTheme.border)
+    ];
+
+    if (hasHwcodec && codecs.length == 2 && (codecs[0] || codecs[1])) {
+      radios.addAll([
+        getRadio(translate('Auto'), 'auto', codec, setCodec),
+        getRadio('VP9', 'vp9', codec, setCodec),
+      ]);
+      if (codecs[0]) {
+        radios.add(getRadio('H264', 'h264', codec, setCodec));
+      }
+      if (codecs[1]) {
+        radios.add(getRadio('H265', 'h265', codec, setCodec));
+      }
+      radios.add(const Divider(color: MyTheme.border));
+    }
+
+    final toggles = [
+      getToggle(id, setState, 'show-remote-cursor', 'Show remote cursor'),
+      getToggle(id, setState, 'show-quality-monitor', 'Show quality monitor'),
+    ];
+
     return CustomAlertDialog(
-      title: SizedBox.shrink(),
       content: Column(
           mainAxisSize: MainAxisSize.min,
-          children: displays +
-              <Widget>[
-                getRadio('Original', 'original', viewStyle, setViewStyle),
-                getRadio('Shrink', 'shrink', viewStyle, setViewStyle),
-                getRadio('Stretch', 'stretch', viewStyle, setViewStyle),
-                Divider(color: MyTheme.border),
-                getRadio('Good image quality', 'best', quality, setQuality),
-                getRadio('Balanced', 'balanced', quality, setQuality),
-                getRadio('Optimize reaction time', 'low', quality, setQuality),
-                Divider(color: MyTheme.border),
-                getToggle(
-                    id, setState, 'show-remote-cursor', 'Show remote cursor'),
-                getToggle(id, setState, 'show-quality-monitor',
-                    'Show quality monitor'),
-              ] +
-              more),
-      actions: [],
+          children: displays + radios + toggles + more),
       contentPadding: 0,
     );
   }, clickMaskDismiss: true, backDismiss: true);
@@ -1175,233 +1217,3 @@ void sendPrompt(bool isMac, String key) {
     gFFI.ctrl = old;
   }
 }
-
-/// flutter/packages/flutter/lib/src/services/keyboard_key.dart -> _keyLabels
-/// see [LogicalKeyboardKey.keyLabel]
-const Map<int, String> _logicalKeyMap = <int, String>{
-  0x00000000020: 'VK_SPACE',
-  0x00000000022: 'VK_QUOTE',
-  0x0000000002c: 'VK_COMMA',
-  0x0000000002d: 'VK_MINUS',
-  0x0000000002f: 'VK_SLASH',
-  0x00000000030: 'VK_0',
-  0x00000000031: 'VK_1',
-  0x00000000032: 'VK_2',
-  0x00000000033: 'VK_3',
-  0x00000000034: 'VK_4',
-  0x00000000035: 'VK_5',
-  0x00000000036: 'VK_6',
-  0x00000000037: 'VK_7',
-  0x00000000038: 'VK_8',
-  0x00000000039: 'VK_9',
-  0x0000000003b: 'VK_SEMICOLON',
-  0x0000000003d: 'VK_PLUS', // it is =
-  0x0000000005b: 'VK_LBRACKET',
-  0x0000000005c: 'VK_BACKSLASH',
-  0x0000000005d: 'VK_RBRACKET',
-  0x00000000061: 'VK_A',
-  0x00000000062: 'VK_B',
-  0x00000000063: 'VK_C',
-  0x00000000064: 'VK_D',
-  0x00000000065: 'VK_E',
-  0x00000000066: 'VK_F',
-  0x00000000067: 'VK_G',
-  0x00000000068: 'VK_H',
-  0x00000000069: 'VK_I',
-  0x0000000006a: 'VK_J',
-  0x0000000006b: 'VK_K',
-  0x0000000006c: 'VK_L',
-  0x0000000006d: 'VK_M',
-  0x0000000006e: 'VK_N',
-  0x0000000006f: 'VK_O',
-  0x00000000070: 'VK_P',
-  0x00000000071: 'VK_Q',
-  0x00000000072: 'VK_R',
-  0x00000000073: 'VK_S',
-  0x00000000074: 'VK_T',
-  0x00000000075: 'VK_U',
-  0x00000000076: 'VK_V',
-  0x00000000077: 'VK_W',
-  0x00000000078: 'VK_X',
-  0x00000000079: 'VK_Y',
-  0x0000000007a: 'VK_Z',
-  0x00100000008: 'VK_BACK',
-  0x00100000009: 'VK_TAB',
-  0x0010000000d: 'VK_ENTER',
-  0x0010000001b: 'VK_ESCAPE',
-  0x0010000007f: 'VK_DELETE',
-  0x00100000104: 'VK_CAPITAL',
-  0x00100000301: 'VK_DOWN',
-  0x00100000302: 'VK_LEFT',
-  0x00100000303: 'VK_RIGHT',
-  0x00100000304: 'VK_UP',
-  0x00100000305: 'VK_END',
-  0x00100000306: 'VK_HOME',
-  0x00100000307: 'VK_NEXT',
-  0x00100000308: 'VK_PRIOR',
-  0x00100000401: 'VK_CLEAR',
-  0x00100000407: 'VK_INSERT',
-  0x00100000504: 'VK_CANCEL',
-  0x00100000506: 'VK_EXECUTE',
-  0x00100000508: 'VK_HELP',
-  0x00100000509: 'VK_PAUSE',
-  0x0010000050c: 'VK_SELECT',
-  0x00100000608: 'VK_PRINT',
-  0x00100000705: 'VK_CONVERT',
-  0x00100000706: 'VK_FINAL',
-  0x00100000711: 'VK_HANGUL',
-  0x00100000712: 'VK_HANJA',
-  0x00100000713: 'VK_JUNJA',
-  0x00100000718: 'VK_KANA',
-  0x00100000719: 'VK_KANJI',
-  0x00100000801: 'VK_F1',
-  0x00100000802: 'VK_F2',
-  0x00100000803: 'VK_F3',
-  0x00100000804: 'VK_F4',
-  0x00100000805: 'VK_F5',
-  0x00100000806: 'VK_F6',
-  0x00100000807: 'VK_F7',
-  0x00100000808: 'VK_F8',
-  0x00100000809: 'VK_F9',
-  0x0010000080a: 'VK_F10',
-  0x0010000080b: 'VK_F11',
-  0x0010000080c: 'VK_F12',
-  0x00100000d2b: 'Apps',
-  0x00200000002: 'VK_SLEEP',
-  0x00200000100: 'VK_CONTROL',
-  0x00200000101: 'RControl',
-  0x00200000102: 'VK_SHIFT',
-  0x00200000103: 'RShift',
-  0x00200000104: 'VK_MENU',
-  0x00200000105: 'RAlt',
-  0x002000001f0: 'VK_CONTROL',
-  0x002000001f2: 'VK_SHIFT',
-  0x002000001f4: 'VK_MENU',
-  0x002000001f6: 'Meta',
-  0x0020000022a: 'VK_MULTIPLY',
-  0x0020000022b: 'VK_ADD',
-  0x0020000022d: 'VK_SUBTRACT',
-  0x0020000022e: 'VK_DECIMAL',
-  0x0020000022f: 'VK_DIVIDE',
-  0x00200000230: 'VK_NUMPAD0',
-  0x00200000231: 'VK_NUMPAD1',
-  0x00200000232: 'VK_NUMPAD2',
-  0x00200000233: 'VK_NUMPAD3',
-  0x00200000234: 'VK_NUMPAD4',
-  0x00200000235: 'VK_NUMPAD5',
-  0x00200000236: 'VK_NUMPAD6',
-  0x00200000237: 'VK_NUMPAD7',
-  0x00200000238: 'VK_NUMPAD8',
-  0x00200000239: 'VK_NUMPAD9',
-};
-
-/// flutter/packages/flutter/lib/src/services/keyboard_key.dart -> _debugName
-/// see [PhysicalKeyboardKey.debugName] -> _debugName
-const Map<int, String> _physicalKeyMap = <int, String>{
-  0x00010082: 'VK_SLEEP',
-  0x00070004: 'VK_A',
-  0x00070005: 'VK_B',
-  0x00070006: 'VK_C',
-  0x00070007: 'VK_D',
-  0x00070008: 'VK_E',
-  0x00070009: 'VK_F',
-  0x0007000a: 'VK_G',
-  0x0007000b: 'VK_H',
-  0x0007000c: 'VK_I',
-  0x0007000d: 'VK_J',
-  0x0007000e: 'VK_K',
-  0x0007000f: 'VK_L',
-  0x00070010: 'VK_M',
-  0x00070011: 'VK_N',
-  0x00070012: 'VK_O',
-  0x00070013: 'VK_P',
-  0x00070014: 'VK_Q',
-  0x00070015: 'VK_R',
-  0x00070016: 'VK_S',
-  0x00070017: 'VK_T',
-  0x00070018: 'VK_U',
-  0x00070019: 'VK_V',
-  0x0007001a: 'VK_W',
-  0x0007001b: 'VK_X',
-  0x0007001c: 'VK_Y',
-  0x0007001d: 'VK_Z',
-  0x0007001e: 'VK_1',
-  0x0007001f: 'VK_2',
-  0x00070020: 'VK_3',
-  0x00070021: 'VK_4',
-  0x00070022: 'VK_5',
-  0x00070023: 'VK_6',
-  0x00070024: 'VK_7',
-  0x00070025: 'VK_8',
-  0x00070026: 'VK_9',
-  0x00070027: 'VK_0',
-  0x00070028: 'VK_ENTER',
-  0x00070029: 'VK_ESCAPE',
-  0x0007002a: 'VK_BACK',
-  0x0007002b: 'VK_TAB',
-  0x0007002c: 'VK_SPACE',
-  0x0007002d: 'VK_MINUS',
-  0x0007002e: 'VK_PLUS', // it is =
-  0x0007002f: 'VK_LBRACKET',
-  0x00070030: 'VK_RBRACKET',
-  0x00070033: 'VK_SEMICOLON',
-  0x00070034: 'VK_QUOTE',
-  0x00070036: 'VK_COMMA',
-  0x00070038: 'VK_SLASH',
-  0x00070039: 'VK_CAPITAL',
-  0x0007003a: 'VK_F1',
-  0x0007003b: 'VK_F2',
-  0x0007003c: 'VK_F3',
-  0x0007003d: 'VK_F4',
-  0x0007003e: 'VK_F5',
-  0x0007003f: 'VK_F6',
-  0x00070040: 'VK_F7',
-  0x00070041: 'VK_F8',
-  0x00070042: 'VK_F9',
-  0x00070043: 'VK_F10',
-  0x00070044: 'VK_F11',
-  0x00070045: 'VK_F12',
-  0x00070049: 'VK_INSERT',
-  0x0007004a: 'VK_HOME',
-  0x0007004b: 'VK_PRIOR', // Page Up
-  0x0007004c: 'VK_DELETE',
-  0x0007004d: 'VK_END',
-  0x0007004e: 'VK_NEXT', // Page Down
-  0x0007004f: 'VK_RIGHT',
-  0x00070050: 'VK_LEFT',
-  0x00070051: 'VK_DOWN',
-  0x00070052: 'VK_UP',
-  0x00070053: 'Num Lock', // TODO rust not impl
-  0x00070054: 'VK_DIVIDE', // numpad
-  0x00070055: 'VK_MULTIPLY',
-  0x00070056: 'VK_SUBTRACT',
-  0x00070057: 'VK_ADD',
-  0x00070058: 'VK_ENTER', // num enter
-  0x00070059: 'VK_NUMPAD0',
-  0x0007005a: 'VK_NUMPAD1',
-  0x0007005b: 'VK_NUMPAD2',
-  0x0007005c: 'VK_NUMPAD3',
-  0x0007005d: 'VK_NUMPAD4',
-  0x0007005e: 'VK_NUMPAD5',
-  0x0007005f: 'VK_NUMPAD6',
-  0x00070060: 'VK_NUMPAD7',
-  0x00070061: 'VK_NUMPAD8',
-  0x00070062: 'VK_NUMPAD9',
-  0x00070063: 'VK_DECIMAL',
-  0x00070075: 'VK_HELP',
-  0x00070077: 'VK_SELECT',
-  0x00070088: 'VK_KANA',
-  0x0007008a: 'VK_CONVERT',
-  0x000700e0: 'VK_CONTROL',
-  0x000700e1: 'VK_SHIFT',
-  0x000700e2: 'VK_MENU',
-  0x000700e3: 'Meta',
-  0x000700e4: 'RControl',
-  0x000700e5: 'RShift',
-  0x000700e6: 'RAlt',
-  0x000700e7: 'RWin',
-  0x000c00b1: 'VK_PAUSE',
-  0x000c00cd: 'VK_PAUSE',
-  0x000c019e: 'LOCK_SCREEN',
-  0x000c0208: 'VK_PRINT',
-};

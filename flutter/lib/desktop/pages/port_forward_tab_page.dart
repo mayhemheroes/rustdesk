@@ -1,11 +1,12 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/port_forward_page.dart';
 import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
-import 'package:flutter_hbb/models/model.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 import 'package:get/get.dart';
 
@@ -19,12 +20,16 @@ class PortForwardTabPage extends StatefulWidget {
 }
 
 class _PortForwardTabPageState extends State<PortForwardTabPage> {
-  final tabController = Get.put(DesktopTabController());
+  late final DesktopTabController tabController;
+  late final bool isRDP;
 
-  static final IconData selectedIcon = Icons.forward_sharp;
-  static final IconData unselectedIcon = Icons.forward_outlined;
+  static const IconData selectedIcon = Icons.forward_sharp;
+  static const IconData unselectedIcon = Icons.forward_outlined;
 
   _PortForwardTabPageState(Map<String, dynamic> params) {
+    isRDP = params['isRDP'];
+    tabController =
+        Get.put(DesktopTabController(tabType: DesktopTabType.portForward));
     tabController.add(TabInfo(
         key: params['id'],
         label: params['id'],
@@ -33,7 +38,7 @@ class _PortForwardTabPageState extends State<PortForwardTabPage> {
         page: PortForwardPage(
           key: ValueKey(params['id']),
           id: params['id'],
-          isRDP: params['isRDP'],
+          isRDP: isRDP,
         )));
   }
 
@@ -44,7 +49,7 @@ class _PortForwardTabPageState extends State<PortForwardTabPage> {
     tabController.onRemove = (_, id) => onRemoveId(id);
 
     rustDeskWinManager.setMethodHandler((call, fromWindowId) async {
-      print(
+      debugPrint(
           "call ${call.method} with args ${call.arguments} from window ${fromWindowId}");
       // for simplify, just replace connectionId
       if (call.method == "new_port_forward") {
@@ -52,6 +57,11 @@ class _PortForwardTabPageState extends State<PortForwardTabPage> {
         final id = args['id'];
         final isRDP = args['isRDP'];
         window_on_top(windowId());
+        if (tabController.state.value.tabs.indexWhere((e) => e.key == id) >=
+            0) {
+          debugPrint("port forward $id exists");
+          return;
+        }
         tabController.add(TabInfo(
             key: id,
             label: id,
@@ -59,44 +69,39 @@ class _PortForwardTabPageState extends State<PortForwardTabPage> {
             unselectedIcon: unselectedIcon,
             page: PortForwardPage(id: id, isRDP: isRDP)));
       } else if (call.method == "onDestroy") {
-        tabController.state.value.tabs.forEach((tab) {
-          print("executing onDestroy hook, closing ${tab.label}}");
-          final tag = 'pf_${tab.label}';
-          ffi(tag).close().then((_) {
-            Get.delete<FFI>(tag: tag);
-          });
-        });
-        Get.back();
+        tabController.clear();
       }
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = isDarkTheme() ? TarBarTheme.dark() : TarBarTheme.light();
-    return SubWindowDragToResizeArea(
-      windowId: windowId(),
-      child: Container(
-        decoration: BoxDecoration(
-            border: Border.all(color: MyTheme.color(context).border!)),
-        child: Scaffold(
-            backgroundColor: MyTheme.color(context).bg,
-            body: DesktopTab(
-              controller: tabController,
-              theme: theme,
-              isMainWindow: false,
-              tail: AddButton(
-                theme: theme,
-              ).paddingOnly(left: 10),
-            )),
-      ),
+    final tabWidget = Container(
+      decoration: BoxDecoration(
+          border: Border.all(color: MyTheme.color(context).border!)),
+      child: Scaffold(
+          backgroundColor: MyTheme.color(context).bg,
+          body: DesktopTab(
+            controller: tabController,
+            onWindowCloseButton: () async {
+              tabController.clear();
+              return true;
+            },
+            tail: AddButton().paddingOnly(left: 10),
+          )),
     );
+    return Platform.isMacOS
+        ? tabWidget
+        : SubWindowDragToResizeArea(
+            resizeEdgeSize: kWindowEdgeSize,
+            windowId: windowId(),
+            child: tabWidget,
+          );
   }
 
   void onRemoveId(String id) {
-    ffi("pf_$id").close();
-    if (tabController.state.value.tabs.length == 0) {
-      WindowController.fromWindowId(windowId()).close();
+    if (tabController.state.value.tabs.isEmpty) {
+      WindowController.fromWindowId(windowId()).hide();
     }
   }
 

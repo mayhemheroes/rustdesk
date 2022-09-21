@@ -11,12 +11,12 @@ fn build_manifest() {
     use std::io::Write;
     if std::env::var("PROFILE").unwrap() == "release" {
         let mut res = winres::WindowsResource::new();
-        res.set_icon("icon.ico")
+        res.set_icon("res/icon.ico")
             .set_language(winapi::um::winnt::MAKELANGID(
                 winapi::um::winnt::LANG_ENGLISH,
                 winapi::um::winnt::SUBLANG_ENGLISH_US,
             ))
-            .set_manifest_file("manifest.xml");
+            .set_manifest_file("res/manifest.xml");
         match res.compile() {
             Err(e) => {
                 write!(std::io::stderr(), "{}", e).unwrap();
@@ -76,6 +76,7 @@ fn install_oboe() {
     //cc::Build::new().file("oboe.cc").include(include).compile("oboe_wrapper");
 }
 
+#[cfg(feature = "flutter")]
 fn gen_flutter_rust_bridge() {
     let llvm_path = match std::env::var("LLVM_HOME") {
         Ok(path) => Some(vec![path]),
@@ -105,6 +106,7 @@ fn main() {
     // there is problem with cfg(target_os) in build.rs, so use our workaround
     // let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     // if target_os == "android" || target_os == "ios" {
+    #[cfg(feature = "flutter")]
     gen_flutter_rust_bridge();
     //     return;
     // }
