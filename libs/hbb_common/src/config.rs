@@ -779,7 +779,7 @@ const PEERS: &str = "peers";
 
 impl PeerConfig {
     pub fn load(id: &str) -> PeerConfig {
-        let _ = CONFIG.read().unwrap(); // for lock
+        let _unused = CONFIG.read().unwrap(); // for lock
         match confy::load_path(&Self::path(id)) {
             Ok(config) => {
                 let mut config: PeerConfig = config;
